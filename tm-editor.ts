@@ -1,41 +1,94 @@
-let graphics, app;
-let pointsets = [],
+import {Scrollbox} from 'pixi-scrollbox';
+import * as $ from 'jquery';
+import * as PIXI from 'pixi.js';
+import {Graphics} from 'pixi.js';
+import 'jquery-ui-dist/jquery-ui';
+
+interface Point {
+    x: number;
+    y: number;
+}
+
+interface Pointset {
+    points: Point[];
+    controlPointDiffs: Point[];
+}
+
+type PointSerialized = number[];
+
+interface PointsetSerialized {
+    points: PointSerialized[];
+    controlPoints: PointSerialized[];
+}
+
+interface Command {
+    apply: () => void;
+    unapply: () => void;
+}
+
+interface Rectangle {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+interface Segment {
+    start: Point;
+    end: Point;
+}
+
+let graphics: Graphics, app;
+let scrollbox: Scrollbox;
+let pointsets: Pointset[] = [],
     pointRadius = 7, controlPointRadius = 3;
-let selected = [];
+let selected: Point[] = [];
 
-let mouseDownStart, mouseDownCoords;
-let dragging = false, dragged = null, dragStart = null; //dragStart is the coords of the point at the start of its drag
-let draggedCpInfo = null; //contains information about a control point, if we're dragging one
-let areaSelecting = false, selectionArea = null;
+let mouseDownStart: number, mouseDownCoords: Point;
+let dragging = false, dragged: Point = null, dragStart: Point = null; //dragStart is the coords of the point at the start of its drag
+let draggedCpInfo: {
+    cpIndex: number,
+    otherCpIndex: number,
+    baseCps: Point[],
+    point: Point,
+    cpStartDiff: Point,
+    otherCpStartDiff: Point
+} = null; //contains information about a control point, if we're dragging one
+let areaSelecting = false, selectionArea: PIXI.Rectangle = null;
 
-const keyCallbacks = {}, keyState = {},
+const keyCallbacks: any = {}, keyState: any = {},
     repeatThreshold = 100; //in ms
 
-let undoStack = [], redoStack = [];
+let undoStack: Command[] = [], redoStack: Command[] = [];
 
 const zoomFactor = 1.25;
 let zoomLevel = 1.0;
 const editorWidth = 800, editorHeight = 600, horizontalBufferPx = 150;
 
 //Coords of the points "dragged" via keyboard (e.g. with the arrows)
-let keyboardDragged = [];
+let keyboardDragged: Point[] = [];
 
 
-const PointType = Object.freeze({ REGULAR: 1, SELECTED: 2, CONTROL_POINT: 3, DEBUG: 4 });
+enum PointType {
+    REGULAR = 1,
+    SELECTED = 2,
+    CONTROL_POINT = 3,
+    DEBUG = 4
+}
 
-function remove(arr, element) {
+function remove<T>(arr: T[], element: T) {
     let i = arr.indexOf(element);
     arr.splice(i, 1);
 }
 
 function setupDrawing() {
-    let view = $("#spline").get(0);
+    let view = $("#spline").get(0) as HTMLCanvasElement;
     app = new PIXI.Application({ width: editorWidth, height: editorHeight, antialias: true, view: view });
 
     graphics = new PIXI.Graphics();
 
     const options = { boxWidth: editorWidth, boxHeight: editorHeight };
-    scrollbox = new Scrollbox.Scrollbox(options);
+    scrollbox = new Scrollbox(options);
     scrollbox.dragScroll = false;
     scrollbox.overflow = 'auto';
     scrollbox.content.addChild(graphics);
@@ -48,7 +101,7 @@ function setupDrawing() {
 
     graphics.interactive = true;
     graphics.hitArea = new PIXI.Rectangle(0, 0, app.renderer.width, app.renderer.height);
-    old = graphics.calculateBounds.bind(graphics);
+    let old = graphics.calculateBounds.bind(graphics);
     graphics.calculateBounds = (function () {
         old();
         const lb = { ...this._bounds}, buffer = horizontalBufferPx;
@@ -58,10 +111,10 @@ function setupDrawing() {
     }).bind(graphics);
 
 
-    graphics.on("click", e => onMouseReleased(e));
-    graphics.on("mousedown", e => onMouseDown(e));
-    graphics.on("mousemove", e => onMouseMove(e));
-    graphics.on("mouseout", e => onMouseOut(e));
+    graphics.on("click", (e: PIXI.InteractionEvent) => onMouseReleased(e));
+    graphics.on("mousedown", (e: PIXI.InteractionEvent) => onMouseDown(e));
+    graphics.on("mousemove", (e: PIXI.InteractionEvent) => onMouseMove(e));
+    graphics.on("mouseout", (e: PIXI.InteractionEvent) => onMouseOut(e));
 
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("keydown", onKeyDown);
@@ -91,8 +144,7 @@ function setupDrawing() {
 
 
     $("#add_new_mode").button();
-    $("#toggle_show_points").button();
-    $("#toggle_show_points").click(function(e) {
+    $("#toggle_show_points").button().on("click",function(e) {
         $("#toggle_show_points_lbl").toggleClass("ui-state-active");
         repaint()
     });
@@ -101,7 +153,7 @@ function setupDrawing() {
     repaint();
 }
 
-function onMouseReleased(e) {
+function onMouseReleased(e: PIXI.InteractionEvent) {
     let coords = getCoords(e.data.global), nearest = pointNearCoords(coords);
 
     const mouseDownElapsed = performance.now() - mouseDownStart,
@@ -109,11 +161,10 @@ function onMouseReleased(e) {
 
     if (isClick && isAddingNew() && nearest == null) {
         const addAfter = last(selected);
-        let ps, i;
-        [ps, i] = addAfter != null ? findPointsetAndIndex(addAfter) : [createPointset(), -1];
+        let {pointset: ps, index: i} = addAfter != null ? findPointsetAndIndex(addAfter) : {pointset: createPointset(), index: -1};
         const currentSelected = selected;
-        command = {
-            apply: () => { const added = addNewAtIndex(ps, coords, i+1); selected = [added]; },
+        const command = {
+            apply: () => { const added = addNewAtIndex(ps, coords, i + 1); selected = [added]; },
             unapply: () => { deleteAtIndex(ps, i + 1); selected = currentSelected;  }
         };
         doCommand(command);
@@ -125,7 +176,7 @@ function onMouseReleased(e) {
             //because the reference to the point can become invalid if it's deleted/re-created
             //(e.g. undo/redo add point)
 
-            command = {
+            const command = {
                 apply: () => { drag(point, to); },
                 unapply: () => { drag(point, from); }
             }
@@ -134,7 +185,7 @@ function onMouseReleased(e) {
             dragged = null;
         } else if (draggedCpInfo != null) {
             const from = {x : dragStart.x, y: dragStart.y}, to = coords;
-            const point = draggedCpInfo.point, [ps, _] = findPointsetAndIndex(point),
+            const point = draggedCpInfo.point, {pointset: ps} = findPointsetAndIndex(point),
                 i = draggedCpInfo.cpIndex, i2 = draggedCpInfo.otherCpIndex,
                 baseCps = draggedCpInfo.baseCps;
             const command = {
@@ -173,10 +224,10 @@ function onMouseReleased(e) {
 }
 
 
-function onMouseDown(e) {
+function onMouseDown(e: PIXI.InteractionEvent) {
     let coords = getCoords(e.data.global),
         nearest = pointNearCoords(coords),
-        nearestCpInfo = null;
+        nearestCpInfo;
 
     mouseDownCoords = coords;
     mouseDownStart = performance.now();
@@ -184,7 +235,7 @@ function onMouseDown(e) {
     //First attempt to drag a control point (if any is near)
     //because they can be inside the point's visualization and then there's no way to drag them out
     if ((nearestCpInfo = infoForControlPointNearCoords(coords)) != null) {
-        const [ps, i] = findPointsetAndIndex(nearestCpInfo.point);
+        const {pointset: ps} = findPointsetAndIndex(nearestCpInfo.point);
         draggedCpInfo = {...nearestCpInfo,
             cpStartDiff: ps.controlPointDiffs[nearestCpInfo.cpIndex],
             otherCpStartDiff: ps.controlPointDiffs[nearestCpInfo.otherCpIndex]};
@@ -193,7 +244,6 @@ function onMouseDown(e) {
         dragStart = { x: cp.x, y: cp.y };
     } else if (nearest != null) {
         dragged = nearest;
-        const [ps, _] = findPointsetAndIndex(nearest);
 
         //need to copy these as the event may get reassigned
         dragStart = { x: nearest.x, y: nearest.y };
@@ -202,11 +252,11 @@ function onMouseDown(e) {
     repaint();
 }
 
-function addToSelection(items) {
+function addToSelection(items: Point[]) {
     return selected = selected.concat(items.filter(p => !isSelected(p)));
 }
 
-function onMouseMove(e) {
+function onMouseMove(e: PIXI.InteractionEvent) {
     const elapsed = mouseDownStart > 0 && performance.now() - mouseDownStart;
     if (!dragging && dragStart != null && elapsed >= 75) {
         dragging = true;
@@ -218,7 +268,7 @@ function onMouseMove(e) {
         repaint();
     } else if(draggedCpInfo != null && dragging) {
         const coords = getCoords(e.data.global);
-        const [ps, i] = findPointsetAndIndex(draggedCpInfo.point),
+        const {pointset: ps} = findPointsetAndIndex(draggedCpInfo.point),
             effectiveCps = applyDiffs(draggedCpInfo.baseCps, ps.controlPointDiffs);
         dragCp(draggedCpInfo.cpIndex, draggedCpInfo.otherCpIndex, effectiveCps, draggedCpInfo.point, coords);
 
@@ -235,7 +285,7 @@ function onMouseMove(e) {
     }
 }
 
-function onMouseOut(e) {
+function onMouseOut(e: PIXI.InteractionEvent) {
     //clear flags related to area selection if the mouse leaves the drawing area
     //else we can't react if the mouse pointer gets released
     areaSelecting = false;
@@ -245,37 +295,37 @@ function onMouseOut(e) {
 }
 
 
-function makeRectangle(point1, point2) {
+function makeRectangle(point1: Point, point2: Point) {
     const upperLeft = { x: Math.min(point1.x, point2.x), y: Math.min(point1.y, point2.y) },
         lowerRight = { x: Math.max(point1.x, point2.x), y: Math.max(point1.y, point2.y) };
     return new PIXI.Rectangle(upperLeft.x, upperLeft.y, lowerRight.x - upperLeft.x, lowerRight.y - upperLeft.y);
 }
 
 
-function isSelected(pt) {
+function isSelected(pt: Point) {
     return selected.indexOf(pt) !== -1;
 }
 
-function createPointset() {
-    const newPointset = {points: [], controlPointDiffs: []};
+function createPointset(): Pointset {
+    const newPointset: Pointset = {points: [], controlPointDiffs: []};
     pointsets.push(newPointset);
     return newPointset;
 }
 
-function isNear(p, x, y, radius) {
+function isNear(p: Point, x: number, y: number, radius?: number) {
     radius = radius || pointRadius;
     return distance(p.x, p.y, x, y) <= radius;
 }
 
-function pointNearCoords(coords) {
+function pointNearCoords(coords: {x: number, y: number}) {
     return allPoints().find(p => isNear(p, coords.x, coords.y));
 }
 
-function findPointsetAndIndex (pt) {
+function findPointsetAndIndex (pt: Point): {pointset: Pointset, index: number} {
     for (let ps of pointsets) {
         const i = ps.points.indexOf(pt);
         if (i !== -1) {
-            return [ps, i];
+            return {pointset: ps, index: i};
         }
     }
 }
@@ -288,11 +338,10 @@ function findPointsetAndIndex (pt) {
   values of all control points for the current pointset (without diffs
   applied) - so we can look things up later without recomputing
   them. */
-function infoForControlPointNearCoords(coords) {
-    let res = [];
+function infoForControlPointNearCoords(coords: Point) {
     const baseCpsMap = new Map();
     for (let pt of selected) {
-        const [ps, i] = findPointsetAndIndex(pt);
+        const {pointset: ps, index: i} = findPointsetAndIndex(pt);
         let baseCps = baseCpsMap.get(ps);
         if (baseCps == null) {
             baseCpsMap.set(ps, baseCps = getBaseControlPoints(ps));
@@ -301,7 +350,7 @@ function infoForControlPointNearCoords(coords) {
             cpsForPoint = getControlPointsForPoint(ps, i, effectiveCps).filter(nonNull),
             nearbyCp = cpsForPoint.find(p => isNear(p, coords.x, coords.y, controlPointRadius));
         if (nearbyCp) {
-            otherCp = cpsForPoint.find(p => p != nearbyCp);
+            const otherCp = cpsForPoint.find(p => p != nearbyCp);
             return {
                 cpIndex: effectiveCps.indexOf(nearbyCp),
                 otherCpIndex: (otherCp != null ? effectiveCps.indexOf(otherCp) : null),
@@ -312,17 +361,8 @@ function infoForControlPointNearCoords(coords) {
     }
 }
 
-function shouldAddToSelection(event) {
+function shouldAddToSelection(event: PIXI.InteractionEvent) {
     return event.data.originalEvent.ctrlKey == true;
-}
-
-//TODO: Might need fixing w.r.t multi-select
-function currentPointSet() {
-    return pointsets.find(ps => ps.points.find(p => isSelected(p)));
-}
-
-function currentPoints() {
-    return currentPointSet().points;
 }
 
 function isAddingNew() {
@@ -333,18 +373,18 @@ function isDisplayingPoints() {
     return $("#toggle_show_points_lbl").hasClass("ui-state-active");
 }
 
-function getCoords(e) {
+function getCoords(e: Point) {
     return { x: (e.x + scrollbox.scrollLeft) / zoomLevel, y: (e.y + scrollbox.scrollTop) / zoomLevel };
 }
 
-function shiftPoints(pts, {x, y}) {
+function shiftPoints(pts: Point[], {x, y}: {x?: number, y?: number}) {
     pts.forEach(p => {
         p.x += x || 0;
         p.y += y || 0;
     });
 }
 
-function download(data, filename, type) {
+function download(data: any, filename: string, type: string) {
     var file = new Blob([data], {type: type});
     if (window.navigator.msSaveOrOpenBlob) // IE10+
         window.navigator.msSaveOrOpenBlob(file, filename);
@@ -362,14 +402,14 @@ function download(data, filename, type) {
     }
 }
 
-function allPoints(ptsets) {
+function allPoints(ptsets?: Pointset[]): Point[] {
     ptsets = ptsets || pointsets;
     return ptsets.flatMap(ps => ps.points);
 }
 
-function pointsetToSerializedForm(pointset, range) {
+function pointsetToSerializedForm(pointset: Pointset, range: Rectangle) {
     //points are {x: , y: } dicts, persisted representation is expected to have [x, y] arrays instead
-    const ptAsArray = pt => [pt.x, pt.y], pts = pointset.points;
+    const ptAsArray = (pt: Point) => [pt.x, pt.y], pts = pointset.points;
 
     if (pts.length > 1) {
         const cps = getEffectiveControlPoints(pointset),
@@ -380,9 +420,9 @@ function pointsetToSerializedForm(pointset, range) {
     return {};
 }
 
-function convertToPersistedRepresentation(pointsets) {
+function convertToPersistedRepresentation(pointsets: Pointset[]) {
     const range = getBounds(allPoints(pointsets)),
-        nonEmpty = ps => ps.points.length > 0;
+        nonEmpty = (ps: Pointset) => ps.points.length > 0;
     return {
         pointsets: pointsets.filter(nonEmpty).map(ps => pointsetToSerializedForm(ps, range)),
         width: range.width,
@@ -390,37 +430,34 @@ function convertToPersistedRepresentation(pointsets) {
     }
 }
 
-function serializePointsets(pointsets) {
+function serializePointsets(pointsets: Pointset[]) {
     return JSON.stringify(convertToPersistedRepresentation(pointsets));
 }
 
 function setupFileOps() {
     $("#existing_terrain").change(function(e) {
-        file = this.files[0];
+        const file = (this as HTMLInputElement).files[0];
         parseTerrainFile(file, showTerrain);
         $(this).val(null);
     })
 
-    $("#save_as").click(function(e) {
+    $("#save_as").on("click",function(e) {
         download(serializePointsets(pointsets), "terrain.json", "application/json");
     });
 }
 
-function copyToClipboard(text) {
+function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text)
         .catch(err => console.error("Couldn't copy spline representation to clipboard", err));
 }
 
 function setupCopyAndImportOps() {
-    $("#copy_to_clipboard").click(function(e) {
+    $("#copy_to_clipboard").on("click", function(e) {
         copyToClipboard(serializePointsets(pointsets));
     });
 
-    $("#import_from_text").click(function(e) {
-        const dialog = $("#import_dialog").dialog({
-            width: 600
-        });
-        $("#do_import").click(function(e) {
+    $("#import_from_text").on("click", function(e) {
+        $("#do_import").on("click", function(e) {
             const textarea = $("#import_dialog textarea");
             const text = textarea.val();
 
@@ -430,19 +467,19 @@ function setupCopyAndImportOps() {
     });
 }
 
-$(document).ready(() => {
+$(() => {
     setupDrawing();
 
     setupFileOps();
     setupCopyAndImportOps();
-    $("#clear_saved_state").click(function(e) {
+    $("#clear_saved_state").on("click",function(e) {
         console.log("Clearing saved..");
 
         clearSavedState();
         clear();
         repaint();
     });
-    $("#reset_cps").click(function(e) {
+    $("#reset_cps").on("click",function(e) {
         resetControlPoints(selected);
         saveCurrentState();
         repaint();
@@ -450,7 +487,7 @@ $(document).ready(() => {
 });
 
 
-function showTerrain(terrain) {
+function showTerrain(terrain: Pointset[]) {
     pointsets = terrain;
     saveCurrentState();
 
@@ -459,11 +496,11 @@ function showTerrain(terrain) {
 }
 
 
-function parseTerrainFile(file, onSuccess) {
+function parseTerrainFile(file: File, onSuccess: (res: any) => void) {
     getFileContents(file, raw => onSuccess(parseJsonRepresentation(raw)));
 }
 
-function getControlPointsFromTangents(points, tangents) {
+function getControlPointsFromTangents(points: Point[], tangents: Point[]) {
     let res = [];
     for (let i = 0; i < points.length - 1; ++i) {
         const p1 = points[i], p2 = points[i+1],
@@ -476,12 +513,10 @@ function getControlPointsFromTangents(points, tangents) {
 }
 
 
-
-
-function convertPersistedRepresentation(data) {
+function convertPersistedRepresentation(data: { pointsets: PointsetSerialized[], width: number, height: number}) {
     const bounds = { x: 50, y: 100, width: data.width, height: data.height };
-    const toPt = ([l, t]) => ({x: l, y: t});
-    const scaleFn = p => ({x: p.x * bounds.width + bounds.x,
+    const toPt = ([l, t]: number[]) => ({x: l, y: t});
+    const scaleFn = (p: Point) => ({x: p.x * bounds.width + bounds.x,
         y: p.y * bounds.height + bounds.y});
 
     return data.pointsets.map(ps => {
@@ -497,45 +532,45 @@ function convertPersistedRepresentation(data) {
     });
 }
 
-function parseJsonRepresentation(raw) {
+function parseJsonRepresentation(raw: any): Pointset[] {
     return convertPersistedRepresentation(JSON.parse(raw));
 }
 
 
-function getFileContents(file, onSuccess, onFail) {
+function getFileContents(file: File, onSuccess: (res: any) => void, onFail?: (err: any) => void) {
     let reader = new FileReader();
     reader.readAsText(file, "UTF-8");
     reader.onload = e => { onSuccess(e.target.result); }
     reader.onerror = e => { if (onFail) { onFail(e); } }
 }
 
-function distance(x1, y1, x2, y2) {
+function distance(x1: number, y1: number, x2: number, y2: number) {
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5;
 
 }
 
-function pt(x, y) {
+function pt(x: number, y: number) {
     return {x: x, y: y};
 }
 
-function bezierCurve(x1, y1, x2, y2, x, y, g) {
+function bezierCurve(x1: number, y1: number, x2: number, y2: number, x: number, y: number, g?: PIXI.Graphics) {
     g = g || graphics;
     g.bezierCurveTo(x1, y1, x2, y2, x, y);
 }
 
-function moveTo(x, y, g) {
+function moveTo(x: number, y: number, g?: PIXI.Graphics) {
     g = g || graphics;
     g.moveTo(x, y);
 }
 
-function nonNull(x) {
+function nonNull(x: any) {
     return x != null;
 }
 
-function lines(points, g, color) {
+function lines(points: Point[], g?: PIXI.Graphics, color?: number) {
     g = g || graphics;
-    // color = color || 0;
-    const oldColor = g.lineColor, width = g.lineWidth;
+    color = color || 0;
+    const oldColor = g.line.color, width = g.line.width;
     g.lineStyle(width, color);
     if (points.length === 0) return;
     const p0 = points[0];
@@ -548,7 +583,7 @@ function lines(points, g, color) {
     g.lineStyle(width, oldColor);
 }
 
-function curveHermite(points, tangents, g) {
+function curveHermite(points: Point[], tangents: Point[], g?: PIXI.Graphics) {
     g = g || graphics;
     let p0 = points[0], t0 = tangents[0];
 
@@ -568,7 +603,7 @@ function curveHermite(points, tangents, g) {
     }
 }
 
-function curveHermiteCps(points, cps, g) {
+function curveHermiteCps(points: Point[], cps: Point[], g?: PIXI.Graphics) {
     g = g || graphics;
     if (points.length > 1) {
         for (let i = 0; i < points.length - 1; ++i) {
@@ -580,21 +615,19 @@ function curveHermiteCps(points, cps, g) {
                 p1.x, p1.y, g);
         }
     }
-
 }
 
 
-
-function getClosedBasisCurvePoints(points) {
-    const pts = [], cps = [];
+function getClosedBasisCurvePoints(points: Point[]): [Point[], Point[]] {
+    const pts: Point[] = [], cps: Point[] = [];
     if (points.length <= 3) {
         return [pts, cps];
     }
     const [f, s, t] = points.slice(0, 3);
     pts.push({x: (f.x + 4*s.x + t.x)/6, y: (f.y + 4*s.y + t.y)/6});
-    let p0, p1;
+    let p0: Point, p1: Point;
     p0 = s; p1 = t;
-    const addPoint = p => {
+    const addPoint = (p: Point) => {
         cps.push({x: (2*p0.x + p1.x)/3, y: (2*p0.y + p1.y)/3 });
         cps.push({x: (p0.x + 2*p1.x)/3, y: (p0.y + 2*p1.y)/3 });
         pts.push({ x: (p0.x + 4*p1.x + p.x)/6, y: (p0.y + 4*p1.y + p.y)/6 });
@@ -611,23 +644,22 @@ function getClosedBasisCurvePoints(points) {
 }
 
 
-function curves(points, g, color) {
+function curves(points: Point[], g?: PIXI.Graphics, color?: number) {
     g = g || graphics;
     color = color || 0;
-    const controlPolygon = points;
-    const [ps, cps] = getClosedBasisCurvePoints(controlPolygon);
-    const oldColor = g.lineColor, width = g.lineWidth;
+    const [ps, cps] = getClosedBasisCurvePoints(points);
+    const oldColor = g.line.color, width = g.line.width;
     g.lineStyle(width, color);
     curveHermiteCps(ps, cps);
     g.lineStyle(width, oldColor);
 }
 
 /* Points is an array of objects with fields {x, y} */
-function monotoneTangents(points) {
+function monotoneTangents(points: Point[]) {
     var tangents = [],
-        d = [],
-        m = [],
-        dx = [],
+        d: number[] = [],
+        m: number[] = [],
+        dx: number[] = [],
         k = 0;
 
     /* Compute the slopes of the secant lines between successive points. */
@@ -675,23 +707,23 @@ function monotoneTangents(points) {
     return tangents;
 }
 
-function getBoundingRect(points) {
+function getBoundingRect(points: Point[]) {
     let minx = Math.min(...points.map(p => p.x)), miny = Math.min(...points.map(p => p.y)),
         maxx = Math.max(...points.map(p => p.x)), maxy = Math.max(...points.map(p => p.y));
     return {x: minx, y: miny, width: maxx - minx, height: maxy - miny};
 }
 
-function getNormalizedPoints(points, bounds) {
+function getNormalizedPoints(points: Point[], bounds: Rectangle) {
     return points.map(p => ({x: (p.x - bounds.x)/bounds.width,
         y: (p.y - bounds.y)/bounds.height }));
 }
 
-function drawPoint(point, radius, pointType, g) {
+function drawPoint(point: Point, radius: number, pointType: PointType, g?: PIXI.Graphics) {
     g = g || graphics;
 
     const [fillColor, lineColor] = (() => {
         switch(pointType) {
-            case PointType.NORMAL:
+            case PointType.REGULAR:
                 return [0xd4e1f4, 0x5f8dd8];
             case PointType.SELECTED:
                 return [0xf9d77a, 0xefbf3b];
@@ -700,13 +732,13 @@ function drawPoint(point, radius, pointType, g) {
             case PointType.DEBUG:
                 return [0x5f8a45, 0x394d2d];
             default:
-                console.error("Unsupposed point type: ", pointType);
+                console.error("Unsupported point type: ", pointType);
                 return null;
         }
     })();
 
     const lineWidth = 1;
-    let prevWidth = g.lineWidth, prevColor = g.lineColor;
+    let prevWidth = g.line.width, prevColor = g.line.color;
 
     g.lineStyle(lineWidth, lineColor);
     g.beginFill(fillColor);
@@ -716,11 +748,11 @@ function drawPoint(point, radius, pointType, g) {
     graphics.lineStyle(prevWidth, prevColor);
 }
 
-function drawRect(rect, lineColor, fillColor, g) {
+function drawRect(rect: Rectangle, lineColor: number, fillColor?: number, g?: PIXI.Graphics) {
     g = g || graphics;
 
     const lineWidth = 1;
-    let prevWidth = g.lineWidth, prevColor = g.lineColor;
+    let prevWidth = g.line.width, prevColor = g.line.color;
 
     const fillAlpha = fillColor != null ? 1 : 0;
     g.lineStyle(lineWidth, lineColor);
@@ -731,12 +763,7 @@ function drawRect(rect, lineColor, fillColor, g) {
     graphics.lineStyle(prevWidth, prevColor);
 }
 
-function getDrawingAreaBounds() {
-    let hitArea = graphics.hitArea;
-    return {x: hitArea.x, y: hitArea.y, width: hitArea.width, height: hitArea.height};
-}
-
-function getBounds(pts) {
+function getBounds(pts: Point[]) {
     let min_x = Math.min(...pts.map(p => p.x)), max_x = Math.max(...pts.map(p => p.x)),
         min_y = Math.min(...pts.map(p => p.y)), max_y = Math.max(...pts.map(p => p.y));
     return {x: min_x,
@@ -766,10 +793,10 @@ function repaint() {
     }
 
     const allPolys = pointsets.map(p => p.points);
-    const getUnioned = allPolys => allPolys.reduce((acc, curr, i) => {
+    const getUnioned = (allPolys: Point[][]) => allPolys.reduce((acc: Point[][], curr, i) => {
         if (acc.length == 0) return [curr];
         let currUnion = curr;
-        let res = [];
+        let res: Point[][] = [];
         for (let i = 0; i < acc.length; ++i) {
             const el = acc[i];
             const u = polyUnion(el, currUnion);
@@ -787,14 +814,14 @@ function repaint() {
     }, []);
 
     const union = getUnioned(allPolys);
-    const amounts = [...Array(5).keys()].map(x => x * 20);
+    const amounts = [...Array(5).keys()].map(x => x * 15);
     const colors = [0xa5eb34, 0x65eb34, 0x34eb52, 0x34eb89, 0x34ebc3, 0x34ebe8];
     let lastUnion = union;
     let lastAmount = 0;
-    const expandStepwise = (union, totalToExpand, step) => {
+    const expandStepwise = (union: Point[][], totalToExpand: number, step: number) => {
         let united = union;
         if (step > 0) {
-            for (j = step; j <= totalToExpand; j += step) {
+            for (let j = step; j <= totalToExpand; j += step) {
                 const expanded = united.map(p => expand(p, step));
                 united = getUnioned(expanded);
             }
@@ -807,7 +834,7 @@ function repaint() {
         let currentUnion = expandStepwise(lastUnion, delta, step).map(part => removeSelfIntersectingParts(part));
         for (const el of currentUnion) {
             lines(el, graphics, colors[i]);
-            // curves(el, graphics, colors[i]);
+            curves(el, graphics, colors[i]);
         }
         lastUnion = currentUnion;
         lastAmount = amounts[i];
@@ -821,8 +848,8 @@ function repaint() {
     setZoom(zoomLevel); //update zoom level label
 }
 
-function segments(pts) {
-    if (pts < 2) {
+function segments(pts: Point[]): Segment[] {
+    if (pts.length < 2) {
         return [];
     }
     let res = [];
@@ -835,18 +862,28 @@ function segments(pts) {
     return res;
 }
 
-function cross(v1, v2) {
+function cross(v1: Point, v2: Point) {
     return v1.x*v2.y - v2.x*v1.y;
 }
 
-function vec(p1, p2) {
-    if (typeof(p1) === 'number' && typeof(p2) === 'number') {
-        return {x: p1, y: p2};
-    }
-    return {x: p2.x - p1.x, y: p2.y - p1.y };
+function isNumber(x: any): x is number {
+    return typeof x === "number";
 }
 
-function intersectSegments(segment1, segment2) {
+function isPoint(o: any): o is Point {
+    return o.x != null && o.y != null;
+}
+
+function vec(p1: Point | number, p2: Point | number): Point {
+    if (isNumber(p1) && isNumber(p2)) {
+        return {x: p1, y: p2};
+    }
+    else if (isPoint(p1) && isPoint(p2)) {
+        return {x: p2.x - p1.x, y: p2.y - p1.y };
+    }
+}
+
+function intersectSegments(segment1: Segment, segment2: Segment): {u: number, v: number} {
     const {start: s1, end: e1} = segment1, r = vec(s1, e1);
     const {start: s2, end: e2} = segment2, s = vec(s2, e2);
     const numerator1 = cross(vec(s1, s2), r), denom = cross(r, s);
@@ -862,42 +899,46 @@ function intersectSegments(segment1, segment2) {
     return {u, v};
 }
 
-function vec_plus(v1, v2) {
+function vec_plus(v1: Point, v2: Point): Point {
     return {x: v1.x + v2.x, y: v1.y + v2.y };
 }
 
-function vec_mult(v1, t) {
+function vec_minus(v1: Point, v2: Point): Point {
+    return {x: v1.x - v2.x, y: v1.y - v2.y };
+}
+
+function vec_mult(v1: Point, t: number): Point {
     return {x: v1.x * t, y: v1.y * t };
 }
 
-function distanceSq(p1, p2) {
+function distanceSq(p1: Point, p2: Point): number {
     return (p2.x - p1.x)**2 + (p2.y - p1.y)**2;
 }
 
-function ptEq(p1, p2) {
+function ptEq(p1: Point, p2: Point): boolean {
     return p1.x === p2.x && p1.y === p2.y;
 }
 
-function dot(v1, v2) {
+function dot(v1: Point, v2: Point): number {
     return v1.x*v2.x + v1.y*v2.y;
 }
 
-function magnitude(v) {
+function magnitude(v: Point): number {
     return Math.sqrt(dot(v, v));
 }
 
-function normalized(v) {
+function normalized(v: Point): Point {
     return vec_mult(v, 1/magnitude(v));
 }
 
-function angleBetween(v1, v2) {
+function angleBetween(v1: Point, v2: Point): number {
     let angle = Math.atan2(v2.y, v2.x) - Math.atan2(v1.y, v1.x);
     if (angle > Math.PI) angle -= 2*Math.PI;
     else if (angle <= -Math.PI) angle += 2*Math.PI;
     return angle;
 }
 
-function clockwiseWinding(pts) {
+function areWindingClockwise(pts: Point[]): boolean {
     let sum = 0;
     for (let s of segments(pts)) {
         sum += (s.end.x - s.start.x)*(s.end.y + s.start.y);
@@ -905,7 +946,7 @@ function clockwiseWinding(pts) {
     return sum < 0;
 }
 
-function inside(poly, pt) {
+function inside(poly: Point[], pt: Point) {
     const ray = {start: pt, end: ptPlus(pt, {x: 1, y: 0})};
     let intersections = 0;
     for (let s of segments(poly)) {
@@ -920,8 +961,9 @@ function inside(poly, pt) {
 // TODO: Add a high-level description of the separate steps in the algorithm
 
 // TODO: Handle the case when the 2 polygons don't intersect
-function polyUnion(poly1, poly2) {
-    const addNeighbour = (graph, to, neighbour) => {
+function polyUnion(poly1: Point[], poly2: Point[]) {
+    type Graph = {p: Point, neighbours: Point[]}[];
+    const addNeighbour = (graph: Graph, to: Point, neighbour: Point) => {
         let found = false;
         graph.filter(el => ptEq(el.p, to)).forEach(el => {
             found = true;
@@ -931,11 +973,11 @@ function polyUnion(poly1, poly2) {
             graph.push({p: to, neighbours: [neighbour]});
         }
     }
-    const linkPoints = (graph, p1, p2) => {
+    const linkPoints = (graph: Graph, p1: Point, p2: Point) => {
         addNeighbour(graph, p1, p2);
         addNeighbour(graph, p2, p1);
     };
-    const removeNeighbour = (graph, to, neighbour) => {
+    const removeNeighbour = (graph: Graph, to: Point, neighbour: Point) => {
         graph.filter(el => ptEq(el.p, to)).forEach(el => {
             for (let i = 0; i < el.neighbours.length; ++i) {
                 if (ptEq(neighbour, el.neighbours[i])) {
@@ -944,15 +986,15 @@ function polyUnion(poly1, poly2) {
             }
         });
     }
-    const unlinkPoints = (graph, p1, p2) => {
+    const unlinkPoints = (graph: Graph, p1: Point, p2: Point) => {
         removeNeighbour(graph, p1, p2);
         removeNeighbour(graph, p2, p1);
     };
-    const getNeighbours = (graph, p) => {
+    const getNeighbours = (graph: Graph, p: Point) => {
         return graph.find(el => ptEq(el.p, p)).neighbours;
     }
 
-    const furthestFromLowestLeft = pts => {
+    const furthestFromLowestLeft = (pts: Point[]) => {
         let minx = pts.map(p => p.x).reduce((a, b) => Math.min(a, b)),
             maxy = pts.map(p => p.y).reduce((a, b) => Math.max(a, b));
         const lowerLeftCorner = {x: minx, y: maxy };
@@ -960,13 +1002,13 @@ function polyUnion(poly1, poly2) {
         return pts[0];
     }
 
-    const poly2Graph = [];
+    const poly2Graph: Graph = [];
     const segments2 = segments(poly2);
     for (let s2 of segments2) {
         linkPoints(poly2Graph, s2.start, s2.end);
     }
 
-    let graph = [];
+    let graph: Graph = [];
     /*
      * Build a graph describing the 2 polygons and any intersection points between them
      */
@@ -1012,7 +1054,7 @@ function polyUnion(poly1, poly2) {
     }
 
 
-    const mergeGraphs = (g1, g2) => {
+    const mergeGraphs = (g1: Graph, g2: Graph) => {
         const res = [...g1];
         for (let v2 of g2) {
             const existing = res.find(v => ptEq(v.p, v2.p));
@@ -1025,11 +1067,11 @@ function polyUnion(poly1, poly2) {
         return res;
     };
     const mergedGraph = mergeGraphs(graph, poly2Graph);
-    let prevPt = null;
+    let prevPt: Point = null;
     const result = [];
     const start = furthestFromLowestLeft(poly1.concat(poly2));
     let q = [start], visited = [start];
-    const isVisited = v => visited.find(x => ptEq(x, v)) != null;
+    const isVisited = (v: Point) => visited.find(x => ptEq(x, v)) != null;
     let clockwiseWindingOrder = null;
     while (q.length > 0) {
         const v = q[0];
@@ -1041,7 +1083,7 @@ function polyUnion(poly1, poly2) {
         if (neighb.length === 2) { //ordinary point (not intersection point)
             if (clockwiseWindingOrder == null) { // need to determine winding order
                 // always pick clockwise winding
-                const o = clockwiseWinding([neighb[1], v, neighb[0]]) ? [neighb[1], v, neighb[0]] : [neighb[0], v, neighb[1]];
+                const o = areWindingClockwise([neighb[1], v, neighb[0]]) ? [neighb[1], v, neighb[0]] : [neighb[0], v, neighb[1]];
                 clockwiseWindingOrder = true;
 
                 q.push(o[2]);
@@ -1069,7 +1111,7 @@ function polyUnion(poly1, poly2) {
     return [result];
 }
 
-function pickClockwiseOrder(pts) {
+function pickClockwiseOrder(pts: Point[]) {
     if (pts.length <= 2) {
         return pts;
     }
@@ -1080,13 +1122,13 @@ function pickClockwiseOrder(pts) {
 }
 
 //Assumes clockwise winding order
-function normal(segment) {
+function normal(segment: Segment) {
     const v = vec(segment.start, segment.end)
     const n1 = normalized(vec(-v.y, v.x)), n2 = normalized(vec(v.y, -v.x));
     return cross(v, n1) < 0 ? n1 : n2;
 }
 
-function drawNormals(pts) {
+function drawNormals(pts: Point[]) {
     for (let s of segments(pts)) {
         const n = normal(s);
         const p = vec_plus(vec_mult(vec_plus(s.start, s.end), 0.5), vec_mult(n, 10));
@@ -1094,9 +1136,9 @@ function drawNormals(pts) {
     }
 }
 
-function expand(pts, amount) {
+function expand(pts: Point[], amount: number) {
     pts = pickClockwiseOrder(pts);
-    const ptAt = i => pts[(i + pts.length) % pts.length];
+    const ptAt = (i: number) => pts[(i + pts.length) % pts.length];
     const result = [];
     for (let i = 0; i < pts.length; ++i) {
         const pt = pts[i], prevPt = ptAt(i-1), nextPt = ptAt(i+1);
@@ -1106,10 +1148,6 @@ function expand(pts, amount) {
             nextSegmentExp = {start: vec_plus(nextPt, vec_mult(n2, amount)), end: vec_plus(pt, vec_mult(n2, amount))}; //start and end deliberately swapped here
         const intersection = intersectSegments(prevSegmentExp, nextSegmentExp);
         if (intersection == null) {
-            const pts1 = [prevSegmentExp.start, prevSegmentExp.end];
-            lines(pts1, graphics, 0xff0000);
-            const pts2 = [nextSegmentExp.start, nextSegmentExp.end];
-            lines(pts2, graphics, 0xffff00);
             continue;
         }
         const {u, v} = intersection;
@@ -1119,27 +1157,31 @@ function expand(pts, amount) {
     return result;
 }
 
-function removeSelfIntersectingParts(pts) {
+function removeSelfIntersectingParts(pts: Point[]): Point[] {
     pts = pickClockwiseOrder(pts);
-    const result = [];
+    const result: Point[] = [];
     const segs = segments(pts);
+    if (segs.length == 0) {
+        return pts;
+    }
     result.push(segs[0].start);
     for (let i = 0; i < segs.length; ++i) {
         const closest = range(i + 1, segs.length - 1).map(j => {
             return {index: j, intersection: intersectSegments(segs[i], segs[j]) };
-        })
-            .filter(data => validIntersection(data.intersection))
-            .reduce((d1, d2) => {
-                if (d1.index === -1) {
-                    return d2;
-                }
-                const pt1 = getIntersectionPoint(d1.intersection, segs[d1.index]),
-                    pt2 = getIntersectionPoint(d2.intersection, segs[d2.index]);
-                const distance1 = distanceSq(segs[i].start, pt1), distance2 = distanceSq(segs[i].start, pt2);
-                return distance1 < distance2 ? d1 : d2;
-            }, {index: -1, intersection: null});
+        }).filter(data => validIntersection(data.intersection))
+        .reduce((d1, d2) => {
+            if (d1.index === -1) {
+                return d2;
+            }
+            const pt1 = getIntersectionPoint(d1.intersection, segs[i]),
+                pt2 = getIntersectionPoint(d2.intersection, segs[i]);
+            const distance1 = distanceSq(segs[i].start, pt1), distance2 = distanceSq(segs[i].start, pt2);
+            return distance1 < distance2 ? d1 : d2;
+        }, {index: -1, intersection: null});
         if (closest.index !== -1) {
-            console.log('Closest intersection: ', closest);
+            const pt = getIntersectionPoint(closest.intersection, segs[i]);
+            result.push(pt);
+            i = closest.index;
         }
         if (i < segs.length - 1) {
             result.push(segs[i].end);
@@ -1148,7 +1190,7 @@ function removeSelfIntersectingParts(pts) {
     return result;
 }
 
-function range(start, end) {
+function range(start: number, end: number) {
     let result = [];
     for (let i = start; i <= end; ++i) {
         result.push(i);
@@ -1156,27 +1198,26 @@ function range(start, end) {
     return result;
 }
 
-function validIntersection(intersection) {
+function validIntersection(intersection: {u: number, v: number}) {
     return intersection != null && intersection.u > 0 && intersection.u < 1 && intersection.v > 0 && intersection.v < 1;
 }
 
-function getIntersectionPoint(intersection, segment1) {
+function getIntersectionPoint(intersection: {u: number, v: number}, segment1: Segment) {
     return vec_plus(segment1.start, vec_mult(vec(segment1.start, segment1.end), intersection.u));
 }
 
-function ptsRightOf(pts, segment) {
+function ptsRightOf(pts: Point[], segment: Segment): number {
     const segmentVec = vec(segment.start, segment.end);
-    return pts.map(p => angleBetween(segmentVec, vec(segment.start, p)) > 0 ? 1 : 0).reduce((a, b) => a + b);
+    return pts.map((p: Point): number => angleBetween(segmentVec, vec(segment.start, p)) > 0 ? 1 : 0).reduce((a, b) => a + b);
 }
 
-
-function ensureLeftMargin(pts) {
+function ensureLeftMargin(pts: Point[]) {
     const closestLeft = Math.min(...pts.map(p => p.x));
     let offset = 0;
     if (closestLeft < horizontalBufferPx) {
         offset = horizontalBufferPx - closestLeft;
         //Do this instead of .map(...) + reassigning, because that screws up the selected marker
-        shiftPoints(pts, {x: offset});
+        shiftPoints(pts, {x: offset, y: 0});
 
         // console.log("Offset: ", offset, "content left: ", scrollbox.content.left);
         // console.log("Content left: ", scrollbox.content.left);
@@ -1185,27 +1226,27 @@ function ensureLeftMargin(pts) {
     return offset;
 }
 
-function applyDiffs(pts, diffs) {
+function applyDiffs(pts: Point[], diffs: Point[]) {
     return pts.map((p, i) => ({ x: p.x + diffs[i].x, y: p.y + diffs[i].y }));
 }
 
-function getBaseControlPoints(pointset) {
+function getBaseControlPoints(pointset: Pointset): Point[] {
     if (pointset.points.length <= 1) { return []; }
     const points = pointset.points, tangents = monotoneTangents(points);
     return getControlPointsFromTangents(points, tangents)
 }
 
-function getEffectiveControlPoints(pointset) {
+function getEffectiveControlPoints(pointset: Pointset): Point[] {
     return applyDiffs(getBaseControlPoints(pointset), pointset.controlPointDiffs);
 }
 
-function getControlPointsForPoint(ps, i, controlPoints) {
+function getControlPointsForPoint(ps: Pointset, i: number, controlPoints: Point[]) {
     const cp1 = i > 0 ? controlPoints[2*i-1] : null;
     const cp2 = i < ps.points.length - 1 ? controlPoints[2*i] : null;
     return [cp1, cp2];
 }
 
-function addControlPointDiffsForPoint(ps, i, cp1, cp2) {
+function addControlPointDiffsForPoint(ps: Pointset, i: number, cp1?: Point, cp2?: Point) {
     const defVal = { x: 0, y: 0 }, diffs = ps.controlPointDiffs, len = ps.points.length;
     if (len <= 1) {
         return;
@@ -1223,18 +1264,18 @@ function addControlPointDiffsForPoint(ps, i, cp1, cp2) {
     }
 }
 
-function repaintPointset(ps, range) {
+function repaintPointset(ps: Pointset, range: Rectangle) {
     const points = ps.points;
 
     if (isDisplayingPoints()) {
         for (let point of points) {
-            drawPoint(point, pointRadius, isSelected(point) ? PointType.SELECTED : PointType.NORMAL);
+            drawPoint(point, pointRadius, isSelected(point) ? PointType.SELECTED : PointType.REGULAR);
         }
     }
 
     if (points.length > 1) {
         lines(points);
-        curves(points);
+        // curves(points);
         // appendPointDescriptions(points, cps);
         // appendNormalizedDescriptions(getNormalizedPoints(points, range),
         // 			     getNormalizedPoints(cps, range));
@@ -1253,44 +1294,36 @@ function repaintPointset(ps, range) {
     }
 }
 
-function ptMinus(pt1, pt2) {
+function ptMinus(pt1: Point, pt2?: Point): Point {
     if (pt2 == null) { return {x: -pt1.x, y: -pt1.y }; }
     return {x: pt1.x - pt2.x, y: pt1.y - pt2.y };
 }
 
-function ptPlus(pt1, pt2) {
+function ptPlus(pt1: Point, pt2: Point): Point {
     return {x: pt1.x + pt2.x, y: pt1.y + pt2.y };
 }
 
-function addNewAtIndex(pointset, coords, i) {
+function addNewAtIndex(pointset: Pointset, coords: Point, i: number): Point {
     const newPt = pt(coords.x, coords.y);
     pointset.points.splice(i, 0, newPt);
     addControlPointDiffsForPoint(pointset, i);
     return newPt;
 }
 
-function last(arr) {
+function last<T>(arr: T[]): T {
     if (arr.length == 0) {
         return null;
     }
     return arr[arr.length - 1];
 }
 
-function removeLast() {
-    const lastPt = last(points);
-    points.splice(points.length - 1, 1);
-    if (isSelected(lastPt)) {
-        selected = [last(points)];
-    }
-}
-
-function drag(point, coords) {
+function drag(point: Point, coords: Point) {
     point.y = coords.y;
     point.x = coords.x;
 }
 
-function dragCp(i, i2, cps, point, coords) {
-    const [ps, ptIdx] = findPointsetAndIndex(point);
+function dragCp(i: number, i2: number, cps: Point[], point: Point, coords: Point) {
+    const {pointset: ps} = findPointsetAndIndex(point);
     const newCp = coords;
     ps.controlPointDiffs[i] = ptPlus(ps.controlPointDiffs[i], ptMinus(newCp, cps[i]));
     if (i2 != null) {
@@ -1299,7 +1332,7 @@ function dragCp(i, i2, cps, point, coords) {
     }
 }
 
-function deleteAtIndex(pointset, i) {
+function deleteAtIndex(pointset: Pointset, i: number) {
     pointset.points.splice(i, 1);
 
     //Also delete control point(s)
@@ -1308,7 +1341,7 @@ function deleteAtIndex(pointset, i) {
     if (i > 0) { diffs.splice(2*i-1, 1); }
 }
 
-function deleteAtIndices(pointset, indices) {
+function deleteAtIndices(pointset: Pointset, indices: number[]) {
     const sortedIndices = [...indices].sort((i1, i2) => i2 - i1);
     for (let i of sortedIndices) {
         deleteAtIndex(pointset, i);
@@ -1318,7 +1351,7 @@ function deleteAtIndices(pointset, indices) {
 function deleteSelected() {
     if (selected.length > 0) {
         const pointInfos = selected.map(pt => {
-            let [ps, i] = findPointsetAndIndex(pt);
+            let {pointset: ps, index: i} = findPointsetAndIndex(pt);
             return [ps, pt, i]; //also need to point for the un-apply operation
         }).reduce((res, [ps, pt, i]) => {
             let existing = res.get(ps);
@@ -1331,12 +1364,12 @@ function deleteSelected() {
         //sorting the indices in asc order makes the inverse operation easier
         // (no need to keep track of indices, just adding at the specified ones works fine)
         for (let k of pointInfos.keys()) {
-            pointInfos.get(k).sort(([_, i1], [_1, i2]) => i1 - i2);
+            pointInfos.get(k).sort(([_, i1]: [Point, number], [_1, i2]: [Point, number]) => i1 - i2);
         }
         const cmd = {
             apply: () => {
                 for (let ps of pointInfos.keys()) {
-                    deleteAtIndices(ps, pointInfos.get(ps).map(([_, i]) => i));
+                    deleteAtIndices(ps, pointInfos.get(ps).map(([_, i]: [Point, number]) => i));
                 }
                 selected = [];
             },
@@ -1374,7 +1407,7 @@ function redo() {
     }
 }
 
-function doCommand(cmd) {
+function doCommand(cmd: Command) {
     cmd.apply();
 
     undoStack.push(cmd);
@@ -1386,19 +1419,19 @@ function doCommand(cmd) {
 }
 
 
-function registerKey(key, callback, repeatable) {
+function registerKey(key: string, callback: (e: KeyboardEvent) => void, repeatable?: boolean) {
     keyCallbacks[key] = { callback: callback };
     if (repeatable) {
         keyCallbacks[key].repeatable = true;
     }
 }
 
-function registerKeyUp(key, callback) {
+function registerKeyUp(key: string, callback: (e: KeyboardEvent) => void) {
     keyCallbacks[key] = keyCallbacks[key] || {};
     keyCallbacks[key].upCallback = callback;
 }
 
-function onKeyDown(e) {
+function onKeyDown(e: KeyboardEvent) {
     let state = keyState[e.key];
     if (state == null) {
         keyState[e.key] = state = { lastTriggered: 0 };
@@ -1414,7 +1447,7 @@ function onKeyDown(e) {
     }
 }
 
-function onKeyUp(e) {
+function onKeyUp(e: KeyboardEvent) {
     const callbacks = keyCallbacks[e.key];
     if (callbacks) {
         //If it's a repeatable action, it would've been triggered on key down, no need again
@@ -1427,21 +1460,21 @@ function onKeyUp(e) {
     }
 }
 
-function stringify(obj, precision) {
+function stringify(obj: Point | Point[], precision?: number) {
     precision = precision || 2;
-    let ptToStr = p => `(${p.x.toFixed(precision)}, ${p.y.toFixed(precision)})`;
+    let ptToStr = (p: Point) => `(${p.x.toFixed(precision)}, ${p.y.toFixed(precision)})`;
     if (obj instanceof Array) {
         return "[" + obj.map(ptToStr).join(", ") + "]";
     }
-    return ptToStr(obj)
+    return ptToStr(obj);
 }
 
-function appendPointDescriptions(points, controlPoints) {
+function appendPointDescriptions(points: Point[], controlPoints: Point[]) {
     $("#points").append(stringify(points) + " <br>");
     $("#control-points").append(stringify(controlPoints) + " <br>");
 }
 
-function appendNormalizedDescriptions(points, controlPoints) {
+function appendNormalizedDescriptions(points: Point[], controlPoints: Point[]) {
     $("#normalized-points").append(stringify(points, 4) + " <br>");
     $("#normalized-control-points").append(stringify(controlPoints, 4) + " <br>");
 }
@@ -1456,18 +1489,18 @@ function resetNormalizedPointDescriptions() {
     $("#normalized-control-points").text("");
 }
 
-function setZoom(newZoom) {
+function setZoom(newZoom: number) {
     zoomLevel = newZoom;
 
     graphics.scale.set(zoomLevel, zoomLevel);
-    scrollbox.content.clamp({ direction: 'all', underflow: scrollbox.options.underflow });
+    scrollbox.content.clamp({ direction: 'all', underflow: 'top-left'});
     scrollbox.update();
 
     //TODO: Seems fishy..
-    z1 = Math.min(zoomLevel, 1.0);
-    b = graphics.getBounds();
-    w = (b.width - b.x);
-    h = (b.height - b.y);
+    const z1 = Math.min(zoomLevel, 1.0);
+    const b = graphics.getBounds();
+    const w = (b.width - b.x);
+    const h = (b.height - b.y);
     //console.log("Setting hit area to: ", w/z1, h/z1);
     //console.log("Graphics bounds: ", graphics.getBounds());
     graphics.hitArea = new PIXI.Rectangle(0, 0, w / z1, h / z1)
@@ -1475,11 +1508,11 @@ function setZoom(newZoom) {
     $("#zoom-level").text("" + zoomLevel);
 }
 
-function zoomIn(e) {
+function zoomIn(e: KeyboardEvent) {
     setZoom(zoomLevel * zoomFactor);
 }
 
-function zoomOut(e) {
+function zoomOut(e: KeyboardEvent) {
     setZoom(zoomLevel / zoomFactor);
 }
 
@@ -1500,13 +1533,13 @@ function registerArrowMovement() {
         const command = {
             apply: () => {
                 for(let i = 0; i < psi.length; ++i) {
-                    const [ps, idx] = psi[i], point = ps.points[idx], to = toCoords[i];
+                    const {pointset: ps, index: idx} = psi[i], point = ps.points[idx], to = toCoords[i];
                     drag(point, to);
                 }
             },
             unapply: () => {
                 for(let i = 0; i < psi.length; ++i) {
-                    const [ps, idx] = psi[i], point = ps.points[idx], from = fromCoords[i];
+                    const {pointset: ps, index: idx} = psi[i], point = ps.points[idx], from = fromCoords[i];
                     drag(point, from);
                 }
             }
@@ -1532,12 +1565,11 @@ function registerArrowMovement() {
 
 
 function saveCurrentState() {
-    const toStore = pointsets;
-    window.localStorage.setItem("recent", JSON.stringify(toStore));
+    window.localStorage.setItem("recent", JSON.stringify(pointsets));
     window.localStorage.setItem("itemDate", new Date().toJSON());
 }
 
-function loadState(items) {
+function loadState(items: Pointset[]) {
     pointsets = items;
     //don't care about preserving selected item and undo/redo stack
     //mainly because it's technically difficult
@@ -1547,7 +1579,7 @@ function loadState(items) {
     undoStack = redoStack = [];
 }
 
-function removeEmpty(pointsets) {
+function removeEmpty(pointsets: Pointset[]) {
     return pointsets.filter(ps => ps.points.length > 0);
 }
 
@@ -1555,7 +1587,7 @@ function loadStoredStateIfNotExpired() {
     const dateStr = window.localStorage.getItem("itemDate");
     if (dateStr != null) {
         const savedDate = new Date(dateStr);
-        if (Date.now() - savedDate <= 48 * 60 * 60 * 1000) { //48 hrs
+        if (Date.now() - savedDate.getTime() <= 376 * 60 * 60 * 1000) { //48 hrs
             console.log("Loading existing..");
             const items = removeEmpty(JSON.parse(window.localStorage.getItem("recent")));
             loadState(items);
@@ -1575,9 +1607,9 @@ function clearSavedState() {
     window.localStorage.clear();
 }
 
-function resetControlPoints(points) {
+function resetControlPoints(points: Point[]) {
     for (let pt of points) {
-        const [ps, i] = findPointsetAndIndex(pt);
+        const {pointset: ps, index: i} = findPointsetAndIndex(pt);
         //TODO: These (i > 0), (i < len - 1) constructs are repeated throughout
         if (i > 0) { ps.controlPointDiffs[2*i - 1] = {x: 0, y: 0}; }
         if (i < ps.points.length - 1) { ps.controlPointDiffs[2*i] = {x: 0, y: 0}; }
