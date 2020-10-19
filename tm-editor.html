@@ -1,0 +1,68 @@
+<html>
+  <head>
+    <title></title>
+    <meta content="">
+
+    <link rel="stylesheet" href="//code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+    <link rel="stylesheet" href="spline-editor.css">
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/4.8.3/pixi.min.js"></script>
+    <script src="./libs/viewport.js"></script>
+    <script src="./libs/scrollbox.js"></script>
+
+
+    <script src="tm-editor.js"></script>
+  </head>
+  <body>
+    <canvas id="spline"></canvas>
+    <div class="side">
+      <div class="operations">
+	<label for="existing_terrain">Open existing:</label>
+	<input type="file" id="existing_terrain" name="existing_terrain">
+	<br/>
+	<button id="import_from_text" type="button">Import from text...</button>
+	<br/> <br/>
+	<button id="save_as" type="button">Save</button>
+	<button id="copy_to_clipboard" type="button">Copy to clipboard</button>
+	<br/> <br/>
+	<button id="clear_saved_state" type="button">Clear saved</button>
+	<button id="reset_cps" type="button">Reset control points of selected</button>
+	<label for="toggle_show_points" id="toggle_show_points_lbl">Show points</label>
+	<input type="checkbox" id="toggle_show_points" checked />
+	<br/> <br/>
+	<div>
+	  <label for="add_new_mode" id="add_new_mode_lbl">Add points</label>
+	  <input type="checkbox" id="add_new_mode" checked />
+	</div>
+
+      </div>
+
+      <div class="results">
+	<div>
+	  <div>Points:</div>
+	  <div id="points"></div>
+	  <br/>
+	  <div>Control points:</div>
+	  <div id="control-points"></div>
+	</div>
+	<div>
+	  <div>Normalized points:</div>
+	  <div id="normalized-points"></div>
+	  <br/>
+	  <div>Normalized control points:</div>
+	  <div id="normalized-control-points"></div>
+	</div>
+	<div>
+	  Zoom level: <span id="zoom-level"></span>
+	</div>
+      </div>
+
+      <div id="import_dialog" title="Import from text">
+	<textarea rows="10" cols="60"></textarea>
+	<button id="do_import" type="button">OK</button>
+      </div>
+    </div>
+  </body>
+</html>
