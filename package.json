@@ -1,10 +1,13 @@
+
 {
   "name": "topological-maps-generator",
   "version": "0.5.0",
   "description": "Should draw something that resembles topological maps",
   "dependencies": {
+    "@types/d3": "^5.16.3",
     "@types/jquery": "^3.5.3",
     "@types/pixi.js": "^5.0.0",
+    "d3": "^6.2.0",
     "jquery": "^3.5.1",
     "jquery-ui": "^1.12.1",
     "jquery-ui-dist": "^1.12.1",

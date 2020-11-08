@@ -3,6 +3,7 @@ import * as $ from 'jquery';
 import * as PIXI from 'pixi.js';
 import {Graphics} from 'pixi.js';
 import 'jquery-ui-dist/jquery-ui';
+import * as d3 from 'd3';
 
 interface Point {
     x: number;
@@ -38,7 +39,13 @@ interface Segment {
     end: Point;
 }
 
-let graphics: Graphics, app;
+interface Interval {
+    start: number;
+    end: number;
+}
+
+let graphics: Graphics, app: PIXI.Application;
+let canvas: HTMLCanvasElement;
 let scrollbox: Scrollbox;
 let pointsets: Pointset[] = [],
     pointRadius = 7, controlPointRadius = 3;
@@ -82,8 +89,7 @@ function remove<T>(arr: T[], element: T) {
 }
 
 function setupDrawing() {
-    let view = $("#spline").get(0) as HTMLCanvasElement;
-    app = new PIXI.Application({ width: editorWidth, height: editorHeight, antialias: true, view: view });
+    app = new PIXI.Application({ width: editorWidth, height: editorHeight, antialias: true, view: canvas });
 
     graphics = new PIXI.Graphics();
 
@@ -468,6 +474,7 @@ function setupCopyAndImportOps() {
 }
 
 $(() => {
+    canvas = $("#spline").get(0) as HTMLCanvasElement;
     setupDrawing();
 
     setupFileOps();
@@ -546,7 +553,10 @@ function getFileContents(file: File, onSuccess: (res: any) => void, onFail?: (er
 
 function distance(x1: number, y1: number, x2: number, y2: number) {
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5;
+}
 
+function distancePts(p1: Point, p2: Point) {
+    return distance(p1.x, p1.y, p2.x, p2.y);
 }
 
 function pt(x: number, y: number) {
@@ -605,6 +615,9 @@ function curveHermite(points: Point[], tangents: Point[], g?: PIXI.Graphics) {
 
 function curveHermiteCps(points: Point[], cps: Point[], g?: PIXI.Graphics) {
     g = g || graphics;
+    if (points.length < 2 || cps.length < points.length * 2 - 2) {
+        return;
+    }
     if (points.length > 1) {
         for (let i = 0; i < points.length - 1; ++i) {
             let p0 = points[i], p1 = points[i+1];
@@ -617,6 +630,50 @@ function curveHermiteCps(points: Point[], cps: Point[], g?: PIXI.Graphics) {
     }
 }
 
+interface FakeCanvasRenderingContext extends CanvasRenderingContext2D {
+    points(): Point[];
+    controlPoints(): Point[];
+}
+
+function getFakeContext(): FakeCanvasRenderingContext {
+    let points: Point[] = [], controlPoints: Point[] = [];
+    return {
+        moveTo(x: number, y: number) {
+            points.push({x, y});
+        },
+        bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number) {
+            points.push({x, y});
+            controlPoints.push({x: cp1x, y: cp1y});
+            controlPoints.push({x: cp2x, y: cp2y});
+        },
+
+        points(): Point[] {
+            return points;
+        },
+
+        controlPoints(): Point[] {
+            return controlPoints;
+        },
+        closePath() {
+        },
+
+        lineTo(x: number, y: number) {
+            points.push({x, y});
+        }
+    } as FakeCanvasRenderingContext; // the unimplemented members aren't needed for now
+}
+
+
+function usingD3Curves(points: Point[], curveFactory: d3.CurveFactory): [Point[], Point[]] {
+    const ctx = getFakeContext();
+    const generator = curveFactory(ctx);
+    generator.lineStart();
+    for (let p of points) {
+        generator.point(p.x, p.y);
+    }
+    generator.lineEnd();
+    return [ctx.points(), ctx.controlPoints()];
+}
 
 function getClosedBasisCurvePoints(points: Point[]): [Point[], Point[]] {
     const pts: Point[] = [], cps: Point[] = [];
@@ -643,11 +700,15 @@ function getClosedBasisCurvePoints(points: Point[]): [Point[], Point[]] {
     return [pts, cps];
 }
 
+function curvePoints(points: Point[]): [Point[], Point[]] {
+    return usingD3Curves(points, d3.curveBasisClosed);
+}
 
+// TODO: Pass in the result of curvePoints(...) to avoid re-computation?
 function curves(points: Point[], g?: PIXI.Graphics, color?: number) {
     g = g || graphics;
     color = color || 0;
-    const [ps, cps] = getClosedBasisCurvePoints(points);
+    const [ps, cps] = curvePoints(points);
     const oldColor = g.line.color, width = g.line.width;
     g.lineStyle(width, color);
     curveHermiteCps(ps, cps);
@@ -656,7 +717,7 @@ function curves(points: Point[], g?: PIXI.Graphics, color?: number) {
 
 /* Points is an array of objects with fields {x, y} */
 function monotoneTangents(points: Point[]) {
-    var tangents = [],
+    let tangents = [],
         d: number[] = [],
         m: number[] = [],
         dx: number[] = [],
@@ -707,6 +768,13 @@ function monotoneTangents(points: Point[]) {
     return tangents;
 }
 
+function bezierCurvePointAt(p0: Point, cp0: Point, cp1: Point, p1: Point, t: number): Point {
+    return vec_plus(vec_mult(p0, Math.pow(1-t, 3)),
+        vec_mult(cp0, 3*Math.pow(1-t, 2) * t),
+        vec_mult(cp1, 3*(1-t)*t*t),
+        vec_mult(p1, t*t*t));
+}
+
 function getBoundingRect(points: Point[]) {
     let minx = Math.min(...points.map(p => p.x)), miny = Math.min(...points.map(p => p.y)),
         maxx = Math.max(...points.map(p => p.x)), maxy = Math.max(...points.map(p => p.y));
@@ -745,7 +813,14 @@ function drawPoint(point: Point, radius: number, pointType: PointType, g?: PIXI.
     g.drawCircle(point.x, point.y, radius);
     g.endFill();
 
-    graphics.lineStyle(prevWidth, prevColor);
+    g.lineStyle(prevWidth, prevColor);
+}
+
+function drawText(coords: Point, text: string) {
+    let pixiText = new PIXI.Text(text, {fontSize: 16});
+    pixiText.x = coords.x - scrollbox.scrollLeft;
+    pixiText.y = coords.y - scrollbox.scrollTop;
+    app.stage.addChild(pixiText);
 }
 
 function drawRect(rect: Rectangle, lineColor: number, fillColor?: number, g?: PIXI.Graphics) {
@@ -775,6 +850,8 @@ function getBounds(pts: Point[]) {
 }
 
 function repaint() {
+    app.stage.removeChildren();
+    app.stage.addChild(scrollbox);
     graphics.clear();
     graphics.lineStyle(1, 0x000000);
 
@@ -784,7 +861,12 @@ function repaint() {
     const allPts = allPoints(), range = getBounds(allPts),
         marginLeft = ensureLeftMargin(allPts);
 
-    for (let ps of pointsets) {
+
+    const reordered = pointsets.map(p => ({
+        points: hasSelfIntersectingParts(p.points) ? reorderClockwise(p.points) : p.points,
+        controlPointDiffs: p.controlPointDiffs
+    }));
+    for (let ps of reordered) {
         repaintPointset(ps, range);
     }
 
@@ -792,7 +874,7 @@ function repaint() {
         drawRect(selectionArea, 0x000000);
     }
 
-    const allPolys = pointsets.map(p => p.points);
+    const allPolys = reordered.map(p => p.points);
     const getUnioned = (allPolys: Point[][]) => allPolys.reduce((acc: Point[][], curr, i) => {
         if (acc.length == 0) return [curr];
         let currUnion = curr;
@@ -814,7 +896,7 @@ function repaint() {
     }, []);
 
     const union = getUnioned(allPolys);
-    const amounts = [...Array(5).keys()].map(x => x * 15);
+    const amounts = [0, 1, 2, 3].map(x => x * 20);
     const colors = [0xa5eb34, 0x65eb34, 0x34eb52, 0x34eb89, 0x34ebc3, 0x34ebe8];
     let lastUnion = union;
     let lastAmount = 0;
@@ -831,11 +913,24 @@ function repaint() {
     for (let i = 0; i < amounts.length; ++i) {
         const delta = amounts[i] - lastAmount;
         const step = 1;
-        let currentUnion = expandStepwise(lastUnion, delta, step).map(part => removeSelfIntersectingParts(part));
+        if (i === 0) {
+            for (let el of lastUnion) {
+                drawNormals(el);
+            }
+        }
+        let currentUnion: Point[][] = expandStepwise(lastUnion, delta, step).map(part => removeSelfIntersectingParts(part));
+        currentUnion = currentUnion.map(el => {
+            const result = addCollinearPoints([...el, el[0]], 300);
+            for (let pt of result) {
+                drawPoint(pt, 3, PointType.DEBUG);
+            }
+            return result.slice(0, result.length - 1);
+        });
         for (const el of currentUnion) {
-            lines(el, graphics, colors[i]);
+            // lines(el, graphics, colors[i]);
             curves(el, graphics, colors[i]);
         }
+
         lastUnion = currentUnion;
         lastAmount = amounts[i];
     }
@@ -845,7 +940,27 @@ function repaint() {
     scrollbox.content.left += marginLeft;
     scrollbox.update();
 
-    setZoom(zoomLevel); //update zoom level label
+    // setZoom(zoomLevel); //update zoom level label
+}
+
+function addCollinearPoints(pts: Point[], maxDistance: number): Point[] {
+    const withMidpoints = [];
+    for (let i = 0; i < pts.length - 1; ++i) {
+        const p0 = pts[i], p1 = pts[i+1];
+        if (withMidpoints.length === 0) {
+            withMidpoints.push(p0);
+        }
+        const dist = distancePts(p0, p1);
+        if (distancePts(p0, p1) >= maxDistance) {
+            const neededPts = Math.floor(dist / maxDistance);
+            for (let j = 1; j <= neededPts; ++j) {
+                const pt = vec_divide(vec_plus(vec_mult(p0, neededPts + 1 - j), vec_mult(p1, j)), neededPts + 1);
+                withMidpoints.push(pt);
+            }
+        }
+        withMidpoints.push(p1);
+    }
+    return withMidpoints;
 }
 
 function segments(pts: Point[]): Segment[] {
@@ -883,24 +998,55 @@ function vec(p1: Point | number, p2: Point | number): Point {
     }
 }
 
+function closeTo(n: number, t: number) {
+    return Math.abs(n - t) < 1e-9;
+}
+
 function intersectSegments(segment1: Segment, segment2: Segment): {u: number, v: number} {
     const {start: s1, end: e1} = segment1, r = vec(s1, e1);
     const {start: s2, end: e2} = segment2, s = vec(s2, e2);
     const numerator1 = cross(vec(s1, s2), r), denom = cross(r, s);
-    if (numerator1 === 0 || denom === 0) {
+    if (closeTo(numerator1, 0) && closeTo(denom, 0)) {
+        let dot_r_r = dot(r, r);
+        let u0 = dot(vec(s1, s2), r)/dot_r_r,
+            u1 = dot(vec(s1, vec_plus(s2, s)), r)/dot_r_r;
+        if (dot(s, r) < 0) {
+            [u0, u1] = [u1, u0];
+        }
+        const intervalIntersection = intersectIntervals({start: u0, end: u1}, {start: 0, end: 1});
+        if (intervalIntersection != null) {
+            const u = intervalIntersection.start;
+            const v = (dot(vec_minus(s1, s2), s) + dot(vec_mult(r, u), s))/dot(s, s);
+            if (!closeTo(intervalIntersection.start, intervalIntersection.end)) {
+                // lines([segment1.start, segment1.end], graphics, 0x00ff00);
+                // lines([segment2.start, segment2.end], graphics, 0x0000ff);
+            }
+            return {u, v};
+        }
         // collinear, check for equal starts/ends, otherwise no intersection
-        if (ptEq(segment1.start, segment2.start)) return {u: 0, v: 0}
-        if (ptEq(segment2.start, segment1.end)) return {u: 1, v: 0};
-        if (ptEq(segment1.start, segment2.end)) return {u: 0, v: 1};
-        if (ptEq(segment1.end, segment2.end)) return {u: 1, v: 1};
+        if (ptClose(segment1.start, segment2.start)) return {u: 0, v: 0}
+        if (ptClose(segment2.start, segment1.end)) return {u: 1, v: 0};
+        if (ptClose(segment1.start, segment2.end)) return {u: 0, v: 1};
+        if (ptClose(segment1.end, segment2.end)) return {u: 1, v: 1};
+        return null;
+    } else if (closeTo(numerator1, 0) || closeTo(denom, 0)) {
         return null;
     }
     const v = numerator1 / denom, u = cross(vec(s1, s2), s) / denom;
     return {u, v};
 }
 
-function vec_plus(v1: Point, v2: Point): Point {
-    return {x: v1.x + v2.x, y: v1.y + v2.y };
+function intersectIntervals(i1: Interval, i2: Interval) {
+    const result = {start: Math.max(i1.start, i2.start), end: Math.min(i1.end, i2.end)};
+    return validInterval(result) ? result : null;
+}
+
+function validInterval(interval: Interval) {
+    return interval.start <= interval.end;
+}
+
+function vec_plus(...args: Point[]): Point {
+    return args.reduce((p1, p2) => ({x: p1.x + p2.x, y: p1.y + p2.y}), {x: 0, y: 0});
 }
 
 function vec_minus(v1: Point, v2: Point): Point {
@@ -911,12 +1057,20 @@ function vec_mult(v1: Point, t: number): Point {
     return {x: v1.x * t, y: v1.y * t };
 }
 
+function vec_divide(v1: Point, t: number) : Point {
+    return {x: v1.x / t, y: v1.y / t};
+}
+
 function distanceSq(p1: Point, p2: Point): number {
     return (p2.x - p1.x)**2 + (p2.y - p1.y)**2;
 }
 
 function ptEq(p1: Point, p2: Point): boolean {
     return p1.x === p2.x && p1.y === p2.y;
+}
+
+function ptClose(p1: Point, p2: Point): boolean {
+    return closeTo(p1.x, p2.x) && closeTo(p1.y, p2.y);
 }
 
 function dot(v1: Point, v2: Point): number {
@@ -932,7 +1086,8 @@ function normalized(v: Point): Point {
 }
 
 function angleBetween(v1: Point, v2: Point): number {
-    let angle = Math.atan2(v2.y, v2.x) - Math.atan2(v1.y, v1.x);
+    const angleV2 = Math.atan2(v2.y, v2.x), angleV1 = Math.atan2(v1.y, v1.x);
+    let angle = angleV2 - angleV1;
     if (angle > Math.PI) angle -= 2*Math.PI;
     else if (angle <= -Math.PI) angle += 2*Math.PI;
     return angle;
@@ -1012,7 +1167,7 @@ function polyUnion(poly1: Point[], poly2: Point[]) {
     /*
      * Build a graph describing the 2 polygons and any intersection points between them
      */
-    const segs = segments(poly1), segs2 = segments(poly2);
+    const segs = segments(poly1), segs2 = segments2;
     let haveIntersection = false;
     for (let s1 of segs) {
         const intersectionPts = [];
@@ -1115,10 +1270,31 @@ function pickClockwiseOrder(pts: Point[]) {
     if (pts.length <= 2) {
         return pts;
     }
-    const n = pts.length;
-    const s1 = {start: pts[0], end: pts[1]}, s2 = {start: pts[0], end: pts[n-1]};
-    const amount1 = ptsRightOf(pts, s1), amount2 = ptsRightOf(pts, s2);
-    return amount1 >= amount2 ? pts : [...pts].reverse();
+    return areWindingClockwise(pts) ? pts : [...pts].reverse();
+}
+
+function reorderClockwise(pts: Point[]) {
+    let center = vec_divide(pts.reduce((a, b) => ptPlus(a, b), pt(0, 0)), pts.length);
+    const compareFn = (a: Point, b: Point) => {
+        const a_center = vec(a, center);
+        const b_center = vec(b, center);
+        if (a_center.x >= 0 && b_center.x < 0) return -1;
+        if (a_center.x < 0 && b_center.x >= 0) return 1;
+        if (a_center.x === 0 && b_center.x === 0) {
+            if (a_center.y >= 0 && b_center.y >= 0) {
+                return b_center.y - a_center.y;
+            }
+        }
+        const det = cross(a_center, b_center);
+        if (det !== 0) {
+            return det < 0 ? -1 : 1;
+        }
+        // points a and b are on the same line from the center
+        // check which point is closer to the center
+        const dist1 = distanceSq(a, center), dist2 = distanceSq(b, center);
+        return dist2 - dist1;
+    };
+    return [...pts].sort(compareFn);
 }
 
 //Assumes clockwise winding order
@@ -1129,10 +1305,12 @@ function normal(segment: Segment) {
 }
 
 function drawNormals(pts: Point[]) {
-    for (let s of segments(pts)) {
+    let i = 0;
+    for (let s of segments(pickClockwiseOrder(pts))) {
         const n = normal(s);
         const p = vec_plus(vec_mult(vec_plus(s.start, s.end), 0.5), vec_mult(n, 10));
         drawPoint(p, 4, PointType.DEBUG);
+        drawText(p, "" + (++i));
     }
 }
 
@@ -1142,10 +1320,16 @@ function expand(pts: Point[], amount: number) {
     const result = [];
     for (let i = 0; i < pts.length; ++i) {
         const pt = pts[i], prevPt = ptAt(i-1), nextPt = ptAt(i+1);
+        if (ptEq(pt, nextPt) || ptEq(prevPt, pt) || collinear(prevPt, pt, nextPt)) {
+            continue;
+        }
         const n1 = normal({start: prevPt, end: pt}), n2 = normal({start: pt, end: nextPt});
 
-        const prevSegmentExp = {start: vec_plus(prevPt, vec_mult(n1, amount)), end: vec_plus(pt, vec_mult(n1, amount)) },
-            nextSegmentExp = {start: vec_plus(nextPt, vec_mult(n2, amount)), end: vec_plus(pt, vec_mult(n2, amount))}; //start and end deliberately swapped here
+        const prevPtExp = vec_plus(prevPt, vec_mult(n1, amount)), ptExp = vec_plus(pt, vec_mult(n1, amount)),
+            nextPtExp = vec_plus(nextPt, vec_mult(n2, amount));
+        const ptExp2 = vec_plus(pt, vec_mult(n2, amount));
+        const prevSegmentExp = {start: prevPtExp, end:  ptExp},
+            nextSegmentExp = {start: nextPtExp, end: ptExp2}; //start and end deliberately swapped here
         const intersection = intersectSegments(prevSegmentExp, nextSegmentExp);
         if (intersection == null) {
             continue;
@@ -1155,6 +1339,27 @@ function expand(pts: Point[], amount: number) {
         result.push(newPt);
     }
     return result;
+}
+
+function collinear(p1: Point, p2: Point, p3: Point) {
+    return Math.abs((p2.y - p1.y)/(p2.x - p1.x) - (p3.y - p1.y)/(p3.x - p1.x)) <= 1e-6;
+}
+
+function* pairs<T>(items: T[]) {
+    for (let i = 0; i < items.length; ++i) {
+        for (let j = i + 1; j < items.length; ++j) {
+            yield [items[i], items[j]];
+        }
+    }
+}
+
+function hasSelfIntersectingParts(pts: Point[]): boolean {
+    for (let [s1, s2] of pairs(segments(pts))) {
+        if (validIntersection(intersectSegments(s1, s2))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function removeSelfIntersectingParts(pts: Point[]): Point[] {
@@ -1168,7 +1373,7 @@ function removeSelfIntersectingParts(pts: Point[]): Point[] {
     for (let i = 0; i < segs.length; ++i) {
         const closest = range(i + 1, segs.length - 1).map(j => {
             return {index: j, intersection: intersectSegments(segs[i], segs[j]) };
-        }).filter(data => validIntersection(data.intersection))
+        }).filter(data => {return validIntersection(data.intersection); })
         .reduce((d1, d2) => {
             if (d1.index === -1) {
                 return d2;
@@ -1180,6 +1385,8 @@ function removeSelfIntersectingParts(pts: Point[]): Point[] {
         }, {index: -1, intersection: null});
         if (closest.index !== -1) {
             const pt = getIntersectionPoint(closest.intersection, segs[i]);
+            // drawPoint(segs[i].start, 4, PointType.DEBUG);
+            // drawPoint(pt, 4, PointType.DEBUG);
             result.push(pt);
             i = closest.index;
         }
@@ -1199,16 +1406,13 @@ function range(start: number, end: number) {
 }
 
 function validIntersection(intersection: {u: number, v: number}) {
-    return intersection != null && intersection.u > 0 && intersection.u < 1 && intersection.v > 0 && intersection.v < 1;
+    const eps = 1e-9;
+    return intersection != null && intersection.u >= -eps && intersection.u <= 1 + eps && intersection.v >= -eps && intersection.v <= 1 + eps &&
+        ((intersection.u > 0 && intersection.u < 1) || (intersection.v > 0 && intersection.v < 1));
 }
 
 function getIntersectionPoint(intersection: {u: number, v: number}, segment1: Segment) {
     return vec_plus(segment1.start, vec_mult(vec(segment1.start, segment1.end), intersection.u));
-}
-
-function ptsRightOf(pts: Point[], segment: Segment): number {
-    const segmentVec = vec(segment.start, segment.end);
-    return pts.map((p: Point): number => angleBetween(segmentVec, vec(segment.start, p)) > 0 ? 1 : 0).reduce((a, b) => a + b);
 }
 
 function ensureLeftMargin(pts: Point[]) {
