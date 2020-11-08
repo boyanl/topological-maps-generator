@@ -145,14 +145,7 @@ function setupDrawing() {
                 selected = [];
             }
             repaint();
-        };
-    });
-
-
-    $("#add_new_mode").button();
-    $("#toggle_show_points").button().on("click",function(e) {
-        $("#toggle_show_points_lbl").toggleClass("ui-state-active");
-        repaint()
+        }
     });
 
     loadStoredStateIfNotExpired();
@@ -372,11 +365,11 @@ function shouldAddToSelection(event: PIXI.InteractionEvent) {
 }
 
 function isAddingNew() {
-    return $("#add_new_mode_lbl").hasClass("ui-state-active");
+    return true;
 }
 
 function isDisplayingPoints() {
-    return $("#toggle_show_points_lbl").hasClass("ui-state-active");
+    return true;
 }
 
 function getCoords(e: Point) {
@@ -476,21 +469,6 @@ function setupCopyAndImportOps() {
 $(() => {
     canvas = $("#spline").get(0) as HTMLCanvasElement;
     setupDrawing();
-
-    setupFileOps();
-    setupCopyAndImportOps();
-    $("#clear_saved_state").on("click",function(e) {
-        console.log("Clearing saved..");
-
-        clearSavedState();
-        clear();
-        repaint();
-    });
-    $("#reset_cps").on("click",function(e) {
-        resetControlPoints(selected);
-        saveCurrentState();
-        repaint();
-    });
 });
 
 
@@ -896,7 +874,7 @@ function repaint() {
     }, []);
 
     const union = getUnioned(allPolys);
-    const amounts = [0, 1, 2, 3].map(x => x * 20);
+    const amounts = [0, 1, 2, 3, 4].map(x => x * 20);
     const colors = [0xa5eb34, 0x65eb34, 0x34eb52, 0x34eb89, 0x34ebc3, 0x34ebe8];
     let lastUnion = union;
     let lastAmount = 0;
@@ -913,17 +891,9 @@ function repaint() {
     for (let i = 0; i < amounts.length; ++i) {
         const delta = amounts[i] - lastAmount;
         const step = 1;
-        if (i === 0) {
-            for (let el of lastUnion) {
-                drawNormals(el);
-            }
-        }
         let currentUnion: Point[][] = expandStepwise(lastUnion, delta, step).map(part => removeSelfIntersectingParts(part));
         currentUnion = currentUnion.map(el => {
             const result = addCollinearPoints([...el, el[0]], 300);
-            for (let pt of result) {
-                drawPoint(pt, 3, PointType.DEBUG);
-            }
             return result.slice(0, result.length - 1);
         });
         for (const el of currentUnion) {
@@ -1468,33 +1438,16 @@ function addControlPointDiffsForPoint(ps: Pointset, i: number, cp1?: Point, cp2?
     }
 }
 
-function repaintPointset(ps: Pointset, range: Rectangle) {
+function repaintPointset(ps: Pointset) {
     const points = ps.points;
+    if (points.length > 1) {
+        lines(points);
+    }
 
     if (isDisplayingPoints()) {
         for (let point of points) {
             drawPoint(point, pointRadius, isSelected(point) ? PointType.SELECTED : PointType.REGULAR);
         }
-    }
-
-    if (points.length > 1) {
-        lines(points);
-        // curves(points);
-        // appendPointDescriptions(points, cps);
-        // appendNormalizedDescriptions(getNormalizedPoints(points, range),
-        // 			     getNormalizedPoints(cps, range));
-
-        /*
-        for (let i = 0; i < points.length; ++i) {
-            const point = points[i];
-            const drawControlPoint = cp => { if (cp != null) { drawPoint(cp, controlPointRadius, PointType.CONTROL_POINT); } };
-            if (isSelected(point) && isDisplayingPoints()) {
-            const [cp0, cp1] = getControlPointsForPoint(ps, i, cps);
-            drawControlPoint(cp0);
-            drawControlPoint(cp1);
-            }
-        }
-        */
     }
 }
 
