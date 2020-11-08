@@ -15,13 +15,6 @@ interface Pointset {
     controlPointDiffs: Point[];
 }
 
-type PointSerialized = number[];
-
-interface PointsetSerialized {
-    points: PointSerialized[];
-    controlPoints: PointSerialized[];
-}
-
 interface Command {
     apply: () => void;
     unapply: () => void;
@@ -47,8 +40,8 @@ interface Interval {
 let graphics: Graphics, app: PIXI.Application;
 let canvas: HTMLCanvasElement;
 let scrollbox: Scrollbox;
-let pointsets: Pointset[] = [],
-    pointRadius = 7, controlPointRadius = 3;
+let allPointsets: Pointset[] = [],
+    pointRadius = 7;
 let selected: Point[] = [];
 
 let mouseDownStart: number, mouseDownCoords: Point;
@@ -225,23 +218,14 @@ function onMouseReleased(e: PIXI.InteractionEvent) {
 
 function onMouseDown(e: PIXI.InteractionEvent) {
     let coords = getCoords(e.data.global),
-        nearest = pointNearCoords(coords),
-        nearestCpInfo;
+        nearest = pointNearCoords(coords);
 
     mouseDownCoords = coords;
     mouseDownStart = performance.now();
 
     //First attempt to drag a control point (if any is near)
     //because they can be inside the point's visualization and then there's no way to drag them out
-    if ((nearestCpInfo = infoForControlPointNearCoords(coords)) != null) {
-        const {pointset: ps} = findPointsetAndIndex(nearestCpInfo.point);
-        draggedCpInfo = {...nearestCpInfo,
-            cpStartDiff: ps.controlPointDiffs[nearestCpInfo.cpIndex],
-            otherCpStartDiff: ps.controlPointDiffs[nearestCpInfo.otherCpIndex]};
-        const cps = applyDiffs(draggedCpInfo.baseCps, ps.controlPointDiffs),
-            cp = cps[draggedCpInfo.cpIndex];
-        dragStart = { x: cp.x, y: cp.y };
-    } else if (nearest != null) {
+    if (nearest != null) {
         dragged = nearest;
 
         //need to copy these as the event may get reassigned
@@ -284,7 +268,7 @@ function onMouseMove(e: PIXI.InteractionEvent) {
     }
 }
 
-function onMouseOut(e: PIXI.InteractionEvent) {
+function onMouseOut(_: PIXI.InteractionEvent) {
     //clear flags related to area selection if the mouse leaves the drawing area
     //else we can't react if the mouse pointer gets released
     areaSelecting = false;
@@ -307,7 +291,7 @@ function isSelected(pt: Point) {
 
 function createPointset(): Pointset {
     const newPointset: Pointset = {points: [], controlPointDiffs: []};
-    pointsets.push(newPointset);
+    allPointsets.push(newPointset);
     return newPointset;
 }
 
@@ -321,41 +305,10 @@ function pointNearCoords(coords: {x: number, y: number}) {
 }
 
 function findPointsetAndIndex (pt: Point): {pointset: Pointset, index: number} {
-    for (let ps of pointsets) {
+    for (let ps of allPointsets) {
         const i = ps.points.indexOf(pt);
         if (i !== -1) {
             return {pointset: ps, index: i};
-        }
-    }
-}
-
-/*Finds data about a control point (of a selected point) near the
-  specified coords.
-
-  Returns info about the control point (i.e. its index), the other
-  control point (related to the same non-control point) and the "base"
-  values of all control points for the current pointset (without diffs
-  applied) - so we can look things up later without recomputing
-  them. */
-function infoForControlPointNearCoords(coords: Point) {
-    const baseCpsMap = new Map();
-    for (let pt of selected) {
-        const {pointset: ps, index: i} = findPointsetAndIndex(pt);
-        let baseCps = baseCpsMap.get(ps);
-        if (baseCps == null) {
-            baseCpsMap.set(ps, baseCps = getBaseControlPoints(ps));
-        }
-        const effectiveCps = applyDiffs(baseCps, ps.controlPointDiffs),
-            cpsForPoint = getControlPointsForPoint(ps, i, effectiveCps).filter(nonNull),
-            nearbyCp = cpsForPoint.find(p => isNear(p, coords.x, coords.y, controlPointRadius));
-        if (nearbyCp) {
-            const otherCp = cpsForPoint.find(p => p != nearbyCp);
-            return {
-                cpIndex: effectiveCps.indexOf(nearbyCp),
-                otherCpIndex: (otherCp != null ? effectiveCps.indexOf(otherCp) : null),
-                baseCps: baseCps,
-                point: pt
-            };
         }
     }
 }
@@ -383,151 +336,15 @@ function shiftPoints(pts: Point[], {x, y}: {x?: number, y?: number}) {
     });
 }
 
-function download(data: any, filename: string, type: string) {
-    var file = new Blob([data], {type: type});
-    if (window.navigator.msSaveOrOpenBlob) // IE10+
-        window.navigator.msSaveOrOpenBlob(file, filename);
-    else { // Others
-        var a = document.createElement("a"),
-            url = URL.createObjectURL(file);
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function() {
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
-        }, 0);
-    }
-}
-
-function allPoints(ptsets?: Pointset[]): Point[] {
-    ptsets = ptsets || pointsets;
-    return ptsets.flatMap(ps => ps.points);
-}
-
-function pointsetToSerializedForm(pointset: Pointset, range: Rectangle) {
-    //points are {x: , y: } dicts, persisted representation is expected to have [x, y] arrays instead
-    const ptAsArray = (pt: Point) => [pt.x, pt.y], pts = pointset.points;
-
-    if (pts.length > 1) {
-        const cps = getEffectiveControlPoints(pointset),
-            data = {"points": getNormalizedPoints(pts, range).map(ptAsArray),
-                "controlPoints": getNormalizedPoints(cps, range).map(ptAsArray)}
-        return data;
-    }
-    return {};
-}
-
-function convertToPersistedRepresentation(pointsets: Pointset[]) {
-    const range = getBounds(allPoints(pointsets)),
-        nonEmpty = (ps: Pointset) => ps.points.length > 0;
-    return {
-        pointsets: pointsets.filter(nonEmpty).map(ps => pointsetToSerializedForm(ps, range)),
-        width: range.width,
-        height: range.height
-    }
-}
-
-function serializePointsets(pointsets: Pointset[]) {
-    return JSON.stringify(convertToPersistedRepresentation(pointsets));
-}
-
-function setupFileOps() {
-    $("#existing_terrain").change(function(e) {
-        const file = (this as HTMLInputElement).files[0];
-        parseTerrainFile(file, showTerrain);
-        $(this).val(null);
-    })
-
-    $("#save_as").on("click",function(e) {
-        download(serializePointsets(pointsets), "terrain.json", "application/json");
-    });
-}
-
-function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text)
-        .catch(err => console.error("Couldn't copy spline representation to clipboard", err));
-}
-
-function setupCopyAndImportOps() {
-    $("#copy_to_clipboard").on("click", function(e) {
-        copyToClipboard(serializePointsets(pointsets));
-    });
-
-    $("#import_from_text").on("click", function(e) {
-        $("#do_import").on("click", function(e) {
-            const textarea = $("#import_dialog textarea");
-            const text = textarea.val();
-
-            $("#import_dialog").dialog("close");
-            showTerrain(parseJsonRepresentation(text));
-        });
-    });
+function allPoints(pointsets?: Pointset[]): Point[] {
+    pointsets = pointsets || allPointsets;
+    return pointsets.flatMap(ps => ps.points);
 }
 
 $(() => {
     canvas = $("#spline").get(0) as HTMLCanvasElement;
     setupDrawing();
 });
-
-
-function showTerrain(terrain: Pointset[]) {
-    pointsets = terrain;
-    saveCurrentState();
-
-    //What to do about undo/redo??
-    repaint();
-}
-
-
-function parseTerrainFile(file: File, onSuccess: (res: any) => void) {
-    getFileContents(file, raw => onSuccess(parseJsonRepresentation(raw)));
-}
-
-function getControlPointsFromTangents(points: Point[], tangents: Point[]) {
-    let res = [];
-    for (let i = 0; i < points.length - 1; ++i) {
-        const p1 = points[i], p2 = points[i+1],
-            t1 = tangents[i], t2 = tangents[i+1];
-        const cp1  = {x: p1.x + t1.x, y: p1.y + t1.y},
-            cp2 = {x: p2.x - t2.x, y: p2.y - t2.y};
-        res.push(cp1, cp2);
-    }
-    return res;
-}
-
-
-function convertPersistedRepresentation(data: { pointsets: PointsetSerialized[], width: number, height: number}) {
-    const bounds = { x: 50, y: 100, width: data.width, height: data.height };
-    const toPt = ([l, t]: number[]) => ({x: l, y: t});
-    const scaleFn = (p: Point) => ({x: p.x * bounds.width + bounds.x,
-        y: p.y * bounds.height + bounds.y});
-
-    return data.pointsets.map(ps => {
-        const points = ps.points.map(p => scaleFn(toPt(p)));
-        const cps = getControlPointsFromTangents(points, monotoneTangents(points))
-
-        return {
-            points: points,
-            controlPointDiffs: ps.controlPoints.map(p => scaleFn(toPt(p))).map(({x, y}, i) => {
-                return {x: x - cps[i].x, y: y - cps[i].y};
-            })
-        }
-    });
-}
-
-function parseJsonRepresentation(raw: any): Pointset[] {
-    return convertPersistedRepresentation(JSON.parse(raw));
-}
-
-
-function getFileContents(file: File, onSuccess: (res: any) => void, onFail?: (err: any) => void) {
-    let reader = new FileReader();
-    reader.readAsText(file, "UTF-8");
-    reader.onload = e => { onSuccess(e.target.result); }
-    reader.onerror = e => { if (onFail) { onFail(e); } }
-}
 
 function distance(x1: number, y1: number, x2: number, y2: number) {
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5;
@@ -551,10 +368,6 @@ function moveTo(x: number, y: number, g?: PIXI.Graphics) {
     g.moveTo(x, y);
 }
 
-function nonNull(x: any) {
-    return x != null;
-}
-
 function lines(points: Point[], g?: PIXI.Graphics, color?: number) {
     g = g || graphics;
     color = color || 0;
@@ -571,35 +384,15 @@ function lines(points: Point[], g?: PIXI.Graphics, color?: number) {
     g.lineStyle(width, oldColor);
 }
 
-function curveHermite(points: Point[], tangents: Point[], g?: PIXI.Graphics) {
+function curve(points: Point[], controlPoints: Point[], g?: PIXI.Graphics) {
     g = g || graphics;
-    let p0 = points[0], t0 = tangents[0];
-
-    if (tangents.length > 1) {
-        let p = p0, t = t0;
-
-        for (let i = 1; i < tangents.length; i++) {
-            p0 = p;
-            t0 = t;
-            p = points[i];
-            t = tangents[i];
-            moveTo(p0.x, p0.y);
-            bezierCurve(p0.x + t0.x, p0.y + t0.y,
-                p.x - t.x, p.y - t.y,
-                p.x, p.y);
-        }
-    }
-}
-
-function curveHermiteCps(points: Point[], cps: Point[], g?: PIXI.Graphics) {
-    g = g || graphics;
-    if (points.length < 2 || cps.length < points.length * 2 - 2) {
+    if (points.length < 2 || controlPoints.length < points.length * 2 - 2) {
         return;
     }
     if (points.length > 1) {
         for (let i = 0; i < points.length - 1; ++i) {
             let p0 = points[i], p1 = points[i+1];
-            let cp0 = cps[2*i], cp1 = cps[2*i + 1];
+            let cp0 = controlPoints[2*i], cp1 = controlPoints[2*i + 1];
             moveTo(p0.x, p0.y, g);
             bezierCurve(cp0.x, cp0.y,
                 cp1.x, cp1.y,
@@ -653,31 +446,6 @@ function usingD3Curves(points: Point[], curveFactory: d3.CurveFactory): [Point[]
     return [ctx.points(), ctx.controlPoints()];
 }
 
-function getClosedBasisCurvePoints(points: Point[]): [Point[], Point[]] {
-    const pts: Point[] = [], cps: Point[] = [];
-    if (points.length <= 3) {
-        return [pts, cps];
-    }
-    const [f, s, t] = points.slice(0, 3);
-    pts.push({x: (f.x + 4*s.x + t.x)/6, y: (f.y + 4*s.y + t.y)/6});
-    let p0: Point, p1: Point;
-    p0 = s; p1 = t;
-    const addPoint = (p: Point) => {
-        cps.push({x: (2*p0.x + p1.x)/3, y: (2*p0.y + p1.y)/3 });
-        cps.push({x: (p0.x + 2*p1.x)/3, y: (p0.y + 2*p1.y)/3 });
-        pts.push({ x: (p0.x + 4*p1.x + p.x)/6, y: (p0.y + 4*p1.y + p.y)/6 });
-        p0 = p1;
-        p1 = p;
-    }
-    for (let i = 3; i < points.length; ++i) {
-        addPoint(points[i]);
-    }
-    addPoint(f);
-    addPoint(s);
-    addPoint(t);
-    return [pts, cps];
-}
-
 function curvePoints(points: Point[]): [Point[], Point[]] {
     return usingD3Curves(points, d3.curveBasisClosed);
 }
@@ -689,61 +457,8 @@ function curves(points: Point[], g?: PIXI.Graphics, color?: number) {
     const [ps, cps] = curvePoints(points);
     const oldColor = g.line.color, width = g.line.width;
     g.lineStyle(width, color);
-    curveHermiteCps(ps, cps);
+    curve(ps, cps);
     g.lineStyle(width, oldColor);
-}
-
-/* Points is an array of objects with fields {x, y} */
-function monotoneTangents(points: Point[]) {
-    let tangents = [],
-        d: number[] = [],
-        m: number[] = [],
-        dx: number[] = [],
-        k = 0;
-
-    /* Compute the slopes of the secant lines between successive points. */
-    for (k = 0; k < points.length-1; k++) {
-        d[k] = (points[k+1].y - points[k].y)/(points[k+1].x - points[k].x);
-    }
-
-    /* Initialize the tangents at every point as the average of the secants. */
-    m[0] = d[0];
-    dx[0] = points[1].x - points[0].x;
-    for (k = 1; k < points.length - 1; k++) {
-        m[k] = (d[k-1]+d[k])/2;
-        dx[k] = (points[k+1].x - points[k-1].x)/2;
-    }
-    m[k] = d[k-1];
-    dx[k] = (points[k].x - points[k-1].x);
-
-    /* Step 3. Very important, step 3. Yep. Wouldn't miss it. */
-    for (k = 0; k < points.length - 1; k++) {
-        if (d[k] == 0) {
-            m[ k ] = 0;
-            m[k+1] = 0;
-        }
-    }
-
-    /* Step 4 + 5. Out of 5 or more steps. */
-    for (k = 0; k < points.length - 1; k++) {
-        if ((Math.abs(m[k]) < 1e-5) || (Math.abs(m[k+1]) < 1e-5)) continue;
-        var ak = m[k] / d[k],
-            bk = m[k + 1] / d[k],
-            s = ak * ak + bk * bk; // monotone constant (?)
-        if (s > 9) {
-            var tk = 3 / Math.sqrt(s);
-            m[k] = tk * ak * d[k];
-            m[k + 1] = tk * bk * d[k];
-        }
-    }
-
-    var len;
-    for (var i = 0; i < points.length; i++) {
-        len = 1 + m[i] * m[i]; // pv.vector(1, m[i]).norm().times(dx[i]/3)
-        tangents.push({x: dx[i] / 3 / len, y: m[i] * dx[i] / 3 / len});
-    }
-
-    return tangents;
 }
 
 function bezierCurvePointAt(p0: Point, cp0: Point, cp1: Point, p1: Point, t: number): Point {
@@ -754,14 +469,9 @@ function bezierCurvePointAt(p0: Point, cp0: Point, cp1: Point, p1: Point, t: num
 }
 
 function getBoundingRect(points: Point[]) {
-    let minx = Math.min(...points.map(p => p.x)), miny = Math.min(...points.map(p => p.y)),
-        maxx = Math.max(...points.map(p => p.x)), maxy = Math.max(...points.map(p => p.y));
-    return {x: minx, y: miny, width: maxx - minx, height: maxy - miny};
-}
-
-function getNormalizedPoints(points: Point[], bounds: Rectangle) {
-    return points.map(p => ({x: (p.x - bounds.x)/bounds.width,
-        y: (p.y - bounds.y)/bounds.height }));
+    let minX = Math.min(...points.map(p => p.x)), minY = Math.min(...points.map(p => p.y)),
+        maxX = Math.max(...points.map(p => p.x)), maxY = Math.max(...points.map(p => p.y));
+    return {x: minX, y: minY, width: maxX - minX, height: maxY - minY};
 }
 
 function drawPoint(point: Point, radius: number, pointType: PointType, g?: PIXI.Graphics) {
@@ -816,36 +526,22 @@ function drawRect(rect: Rectangle, lineColor: number, fillColor?: number, g?: PI
     graphics.lineStyle(prevWidth, prevColor);
 }
 
-function getBounds(pts: Point[]) {
-    let min_x = Math.min(...pts.map(p => p.x)), max_x = Math.max(...pts.map(p => p.x)),
-        min_y = Math.min(...pts.map(p => p.y)), max_y = Math.max(...pts.map(p => p.y));
-    return {x: min_x,
-        y: min_y,
-        width: (max_x !== min_x ? max_x - min_x : 1),
-        height: (max_y !== min_y ? max_y - min_y : 1)
-    };
-
-}
-
 function repaint() {
     app.stage.removeChildren();
     app.stage.addChild(scrollbox);
     graphics.clear();
     graphics.lineStyle(1, 0x000000);
 
-    resetPointDescriptions();
-    resetNormalizedPointDescriptions();
-
-    const allPts = allPoints(), range = getBounds(allPts),
+    const allPts = allPoints(),
         marginLeft = ensureLeftMargin(allPts);
 
 
-    const reordered = pointsets.map(p => ({
+    const reordered = allPointsets.map(p => ({
         points: hasSelfIntersectingParts(p.points) ? reorderClockwise(p.points) : p.points,
         controlPointDiffs: p.controlPointDiffs
     }));
     for (let ps of reordered) {
-        repaintPointset(ps, range);
+        repaintPointset(ps);
     }
 
     if (selectionArea != null) {
@@ -853,7 +549,7 @@ function repaint() {
     }
 
     const allPolys = reordered.map(p => p.points);
-    const getUnioned = (allPolys: Point[][]) => allPolys.reduce((acc: Point[][], curr, i) => {
+    const unionMultiplePolygons = (allPolys: Point[][]) => allPolys.reduce((acc: Point[][], curr, i) => {
         if (acc.length == 0) return [curr];
         let currUnion = curr;
         let res: Point[][] = [];
@@ -873,7 +569,7 @@ function repaint() {
         return res;
     }, []);
 
-    const union = getUnioned(allPolys);
+    const union = unionMultiplePolygons(allPolys);
     const amounts = [0, 1, 2, 3, 4].map(x => x * 20);
     const colors = [0xa5eb34, 0x65eb34, 0x34eb52, 0x34eb89, 0x34ebc3, 0x34ebe8];
     let lastUnion = union;
@@ -883,7 +579,7 @@ function repaint() {
         if (step > 0) {
             for (let j = step; j <= totalToExpand; j += step) {
                 const expanded = united.map(p => expand(p, step));
-                united = getUnioned(expanded);
+                united = unionMultiplePolygons(expanded);
             }
         }
         return united;
@@ -1084,7 +780,6 @@ function inside(poly: Point[], pt: Point) {
 }
 
 // TODO: Add a high-level description of the separate steps in the algorithm
-
 // TODO: Handle the case when the 2 polygons don't intersect
 function polyUnion(poly1: Point[], poly2: Point[]) {
     type Graph = {p: Point, neighbours: Point[]}[];
@@ -1137,11 +832,11 @@ function polyUnion(poly1: Point[], poly2: Point[]) {
     /*
      * Build a graph describing the 2 polygons and any intersection points between them
      */
-    const segs = segments(poly1), segs2 = segments2;
+    const segments1 = segments(poly1);
     let haveIntersection = false;
-    for (let s1 of segs) {
+    for (let s1 of segments1) {
         const intersectionPts = [];
-        for (let s2 of [...segs2]) { //iterate over a copy so that iteration isn't affected by changes
+        for (let s2 of [...segments2]) { //iterate over a copy so that iteration isn't affected by changes
             const inters = intersectSegments(s1, s2);
             if (inters != null &&
                 inters.u > 0 && inters.u < 1 &&
@@ -1152,9 +847,9 @@ function polyUnion(poly1: Point[], poly2: Point[]) {
                 linkPoints(poly2Graph, s2.start, pt);
                 linkPoints(poly2Graph, s2.end, pt);
                 unlinkPoints(poly2Graph, s2.start, s2.end);
-                segs2.forEach((p, i) => {
+                segments2.forEach((p, i) => {
                     if (ptEq(p.start, s2.start) && ptEq(p.end, s2.end)) {
-                        segs2.splice(i, 1, {start: s2.start, end: pt}, {start: pt, end: s2.end});
+                        segments2.splice(i, 1, {start: s2.start, end: pt}, {start: pt, end: s2.end});
                     }
                 });
                 haveIntersection = true;
@@ -1304,7 +999,7 @@ function expand(pts: Point[], amount: number) {
         if (intersection == null) {
             continue;
         }
-        const {u, v} = intersection;
+        const {u} = intersection;
         const newPt = vec_plus(prevSegmentExp.start, vec_mult(vec(prevSegmentExp.start, prevSegmentExp.end), u));
         result.push(newPt);
     }
@@ -1404,40 +1099,6 @@ function applyDiffs(pts: Point[], diffs: Point[]) {
     return pts.map((p, i) => ({ x: p.x + diffs[i].x, y: p.y + diffs[i].y }));
 }
 
-function getBaseControlPoints(pointset: Pointset): Point[] {
-    if (pointset.points.length <= 1) { return []; }
-    const points = pointset.points, tangents = monotoneTangents(points);
-    return getControlPointsFromTangents(points, tangents)
-}
-
-function getEffectiveControlPoints(pointset: Pointset): Point[] {
-    return applyDiffs(getBaseControlPoints(pointset), pointset.controlPointDiffs);
-}
-
-function getControlPointsForPoint(ps: Pointset, i: number, controlPoints: Point[]) {
-    const cp1 = i > 0 ? controlPoints[2*i-1] : null;
-    const cp2 = i < ps.points.length - 1 ? controlPoints[2*i] : null;
-    return [cp1, cp2];
-}
-
-function addControlPointDiffsForPoint(ps: Pointset, i: number, cp1?: Point, cp2?: Point) {
-    const defVal = { x: 0, y: 0 }, diffs = ps.controlPointDiffs, len = ps.points.length;
-    if (len <= 1) {
-        return;
-    }
-
-    if (i > 0) { diffs.splice(2*i - 1, 0, cp1 || defVal); }
-    if (i < len - 1) { diffs.splice(2*i, 0, cp2 || defVal); }
-
-    if (i == 0) {
-        const toAdd = (len > 2 ? ptMinus(diffs[1]) : defVal);
-        diffs.splice(2*i + 1, 0, toAdd);
-    } else if (i == len - 1) {
-        const toAdd = (len > 2 ? ptMinus(diffs[diffs.length - 2]) : defVal);
-        diffs.splice(2*i - 2, 0, toAdd);
-    }
-}
-
 function repaintPointset(ps: Pointset) {
     const points = ps.points;
     if (points.length > 1) {
@@ -1463,7 +1124,6 @@ function ptPlus(pt1: Point, pt2: Point): Point {
 function addNewAtIndex(pointset: Pointset, coords: Point, i: number): Point {
     const newPt = pt(coords.x, coords.y);
     pointset.points.splice(i, 0, newPt);
-    addControlPointDiffsForPoint(pointset, i);
     return newPt;
 }
 
@@ -1617,35 +1277,6 @@ function onKeyUp(e: KeyboardEvent) {
     }
 }
 
-function stringify(obj: Point | Point[], precision?: number) {
-    precision = precision || 2;
-    let ptToStr = (p: Point) => `(${p.x.toFixed(precision)}, ${p.y.toFixed(precision)})`;
-    if (obj instanceof Array) {
-        return "[" + obj.map(ptToStr).join(", ") + "]";
-    }
-    return ptToStr(obj);
-}
-
-function appendPointDescriptions(points: Point[], controlPoints: Point[]) {
-    $("#points").append(stringify(points) + " <br>");
-    $("#control-points").append(stringify(controlPoints) + " <br>");
-}
-
-function appendNormalizedDescriptions(points: Point[], controlPoints: Point[]) {
-    $("#normalized-points").append(stringify(points, 4) + " <br>");
-    $("#normalized-control-points").append(stringify(controlPoints, 4) + " <br>");
-}
-
-function resetPointDescriptions() {
-    $("#points").text("");
-    $("#control-points").text("");
-}
-
-function resetNormalizedPointDescriptions() {
-    $("#normalized-points").text("");
-    $("#normalized-control-points").text("");
-}
-
 function setZoom(newZoom: number) {
     zoomLevel = newZoom;
 
@@ -1665,11 +1296,11 @@ function setZoom(newZoom: number) {
     $("#zoom-level").text("" + zoomLevel);
 }
 
-function zoomIn(e: KeyboardEvent) {
+function zoomIn(_: KeyboardEvent) {
     setZoom(zoomLevel * zoomFactor);
 }
 
-function zoomOut(e: KeyboardEvent) {
+function zoomOut(_: KeyboardEvent) {
     setZoom(zoomLevel / zoomFactor);
 }
 
@@ -1716,18 +1347,17 @@ function registerArrowMovement() {
             shiftPoints(selected, keyInfo.offset);
             repaint();
         }, true);
-        registerKeyUp(keyInfo.key, e => registerMoveCmd());
+        registerKeyUp(keyInfo.key, _ => registerMoveCmd());
     }
 }
 
-
 function saveCurrentState() {
-    window.localStorage.setItem("recent", JSON.stringify(pointsets));
+    window.localStorage.setItem("recent", JSON.stringify(allPointsets));
     window.localStorage.setItem("itemDate", new Date().toJSON());
 }
 
 function loadState(items: Pointset[]) {
-    pointsets = items;
+    allPointsets = items;
     //don't care about preserving selected item and undo/redo stack
     //mainly because it's technically difficult
     //- selected relies on equality of references, which would not be true when (de-)serializing
@@ -1744,31 +1374,12 @@ function loadStoredStateIfNotExpired() {
     const dateStr = window.localStorage.getItem("itemDate");
     if (dateStr != null) {
         const savedDate = new Date(dateStr);
-        if (Date.now() - savedDate.getTime() <= 376 * 60 * 60 * 1000) { //48 hrs
+        if (Date.now() - savedDate.getTime() <= 376 * 60 * 60 * 1000) { // 376 hours = 2 weeks
             console.log("Loading existing..");
             const items = removeEmpty(JSON.parse(window.localStorage.getItem("recent")));
             loadState(items);
         }
     } else {
         console.log("No saved state to load");
-    }
-}
-
-function clear() {
-    pointsets = selected = [];
-    undoStack = redoStack = [];
-}
-
-
-function clearSavedState() {
-    window.localStorage.clear();
-}
-
-function resetControlPoints(points: Point[]) {
-    for (let pt of points) {
-        const {pointset: ps, index: i} = findPointsetAndIndex(pt);
-        //TODO: These (i > 0), (i < len - 1) constructs are repeated throughout
-        if (i > 0) { ps.controlPointDiffs[2*i - 1] = {x: 0, y: 0}; }
-        if (i < ps.points.length - 1) { ps.controlPointDiffs[2*i] = {x: 0, y: 0}; }
     }
 }
