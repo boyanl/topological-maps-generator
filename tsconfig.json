@@ -11,7 +11,8 @@
     "preserveConstEnums": true,
     "sourceMap": true,
     "outDir": "./dist/",
-    "moduleResolution": "Node"
+    "moduleResolution": "Node",
+    "types": ["babylonjs"]
   },
   "files": [
     "tm-editor.ts"

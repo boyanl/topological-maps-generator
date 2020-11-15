@@ -4,6 +4,8 @@ import * as PIXI from 'pixi.js';
 import {Graphics} from 'pixi.js';
 import 'jquery-ui-dist/jquery-ui';
 import * as d3 from 'd3';
+import * as BABYLON from 'babylonjs';
+import * as earcut from 'earcut';
 
 interface Point {
     x: number;
@@ -37,8 +39,13 @@ interface Interval {
     end: number;
 }
 
+interface Curve {
+    points: Point[];
+    controlPoints: Point[];
+}
+
 let graphics: Graphics, app: PIXI.Application;
-let canvas: HTMLCanvasElement;
+let canvas2dView: HTMLCanvasElement, canvas3dView: HTMLCanvasElement;
 let scrollbox: Scrollbox;
 let allPointsets: Pointset[] = [],
     pointRadius = 7;
@@ -68,6 +75,9 @@ const editorWidth = 800, editorHeight = 600, horizontalBufferPx = 150;
 //Coords of the points "dragged" via keyboard (e.g. with the arrows)
 let keyboardDragged: Point[] = [];
 
+let engine: BABYLON.Engine;
+let scene: BABYLON.Scene;
+let camera: BABYLON.Camera;
 
 enum PointType {
     REGULAR = 1,
@@ -82,7 +92,7 @@ function remove<T>(arr: T[], element: T) {
 }
 
 function setupDrawing() {
-    app = new PIXI.Application({ width: editorWidth, height: editorHeight, antialias: true, view: canvas });
+    app = new PIXI.Application({ width: editorWidth, height: editorHeight, antialias: true, view: canvas2dView });
 
     graphics = new PIXI.Graphics();
 
@@ -110,10 +120,10 @@ function setupDrawing() {
     }).bind(graphics);
 
 
-    graphics.on("click", (e: PIXI.InteractionEvent) => onMouseReleased(e));
-    graphics.on("mousedown", (e: PIXI.InteractionEvent) => onMouseDown(e));
-    graphics.on("mousemove", (e: PIXI.InteractionEvent) => onMouseMove(e));
-    graphics.on("mouseout", (e: PIXI.InteractionEvent) => onMouseOut(e));
+    scrollbox.on("click", (e: PIXI.InteractionEvent) => onMouseReleased(e));
+    scrollbox.on("mousedown", (e: PIXI.InteractionEvent) => onMouseDown(e));
+    scrollbox.on("mousemove", (e: PIXI.InteractionEvent) => onMouseMove(e));
+    scrollbox.on("mouseout", (e: PIXI.InteractionEvent) => onMouseOut(e));
 
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("keydown", onKeyDown);
@@ -342,7 +352,11 @@ function allPoints(pointsets?: Pointset[]): Point[] {
 }
 
 $(() => {
-    canvas = $("#spline").get(0) as HTMLCanvasElement;
+    canvas2dView = $("#two-d-view").get(0) as HTMLCanvasElement;
+    canvas3dView = $("#three-d-view").get(0) as HTMLCanvasElement;
+    engine = new BABYLON.Engine(canvas3dView, true);
+    scene = new BABYLON.Scene(engine);
+    setupScene(scene);
     setupDrawing();
 });
 
@@ -451,13 +465,22 @@ function curvePoints(points: Point[]): [Point[], Point[]] {
 }
 
 // TODO: Pass in the result of curvePoints(...) to avoid re-computation?
-function curves(points: Point[], g?: PIXI.Graphics, color?: number) {
+function drawCurvePointsOnly(points: Point[], g?: PIXI.Graphics, color?: number) {
     g = g || graphics;
     color = color || 0;
     const [ps, cps] = curvePoints(points);
     const oldColor = g.line.color, width = g.line.width;
     g.lineStyle(width, color);
     curve(ps, cps);
+    g.lineStyle(width, oldColor);
+}
+
+function drawCurve(points: Point[], controlPoints: Point[], g?: PIXI.Graphics, color?: number) {
+    g = g || graphics;
+    color = color || 0;
+    const oldColor = g.line.color, width = g.line.width;
+    g.lineStyle(width, color);
+    curve(points, controlPoints);
     g.lineStyle(width, oldColor);
 }
 
@@ -548,6 +571,8 @@ function repaint() {
         drawRect(selectionArea, 0x000000);
     }
 
+    let layers: { curves: Curve[], color: number }[] = [];
+
     const allPolys = reordered.map(p => p.points);
     const unionMultiplePolygons = (allPolys: Point[][]) => allPolys.reduce((acc: Point[][], curr, i) => {
         if (acc.length == 0) return [curr];
@@ -585,6 +610,7 @@ function repaint() {
         return united;
     }
     for (let i = 0; i < amounts.length; ++i) {
+        layers[i] = { curves: [], color: colors[i] };
         const delta = amounts[i] - lastAmount;
         const step = 1;
         let currentUnion: Point[][] = expandStepwise(lastUnion, delta, step).map(part => removeSelfIntersectingParts(part));
@@ -594,7 +620,9 @@ function repaint() {
         });
         for (const el of currentUnion) {
             // lines(el, graphics, colors[i]);
-            curves(el, graphics, colors[i]);
+            const [pts, cps] = curvePoints(el);
+            layers[i].curves.push({ points: pts, controlPoints: cps});
+            drawCurve(pts, cps, graphics, colors[i]);
         }
 
         lastUnion = currentUnion;
@@ -607,6 +635,8 @@ function repaint() {
     scrollbox.update();
 
     // setZoom(zoomLevel); //update zoom level label
+    updateScene(layers);
+    scene.render();
 }
 
 function addCollinearPoints(pts: Point[], maxDistance: number): Point[] {
@@ -1382,4 +1412,89 @@ function loadStoredStateIfNotExpired() {
     } else {
         console.log("No saved state to load");
     }
+}
+
+function setupScene(scene: BABYLON.Scene) {
+    const width = 800, height = 600;
+    const offsetY = 1000;
+    const target = new BABYLON.Vector3(width/2, 0, height/2);
+    camera = new BABYLON.ArcRotateCamera("camera", 0, 0, offsetY, target, scene, true);
+    camera.upVector = new BABYLON.Vector3(0, 0, 1);
+    camera.position = new BABYLON.Vector3(width/2, offsetY, height/2);
+    camera.attachControl(canvas3dView, true);
+    scene.clearColor = BABYLON.Color4.FromColor3(BABYLON.Color3.White());
+
+    engine.runRenderLoop(() => scene.render());
+}
+
+function updateScene(layers: { curves: Curve[], color: number}[]) {
+    for (let i = 0; i < scene.meshes.length; ++i) {
+        const mesh = scene.meshes[i];
+        const isCurveMesh = mesh.name.startsWith('curvemesh');
+        if (isCurveMesh) {
+            mesh.dispose(true, true);
+            scene.removeMesh(mesh, true);
+        }
+    }
+
+    const maxHeight = 200;
+    const heightStep = maxHeight / layers.length;
+    for (let i = 0; i < layers.length; ++i) {
+        const layer = layers[i];
+        for (let j = 0; j < layer.curves.length; ++j) {
+            const curve = layer.curves[j];
+            const color = BABYLON.Color4.FromInts(...getComponents(layer.color), 255*(1 - (heightStep * i * 0.7)/maxHeight));
+            createMeshForCurve(curve, maxHeight - heightStep * i, `curvemesh-layer-${i}-curve-${j}`, color, scene);
+        }
+    }
+
+    for (let element of scene.meshes) {
+        const isCurveMesh = element.name.startsWith('curvemesh');
+        if (isCurveMesh && (element as any).used === false) {
+            scene.removeMesh(element, true);
+        }
+    }
+}
+
+function createMeshForCurve(curve: Curve, height: number, name: string, color: BABYLON.Color4, scene: BABYLON.Scene): BABYLON.Mesh[] {
+    if (curve.points.length <= 2 || curve.points.length * 2 - 2 !== curve.controlPoints.length) {
+        console.log('Curve seemingly violates assumptions; returning no meshes');
+        return [];
+    }
+    const result = [];
+    let curve3d: BABYLON.Curve3 = null;
+    for (let i = 0; i < curve.points.length - 1; ++i) {
+        const p0 = curve.points[i],
+            cp0 = curve.controlPoints[2*i],
+            cp1 = curve.controlPoints[2*i + 1],
+            p1 = curve.points[i + 1];
+        const toVector = (p: Point) => new BABYLON.Vector3(p.x, height, 600 - p.y);
+        const currentCurve = BABYLON.Curve3.CreateCubicBezier(toVector(p0), toVector(cp0), toVector(cp1), toVector(p1), 10);
+        if (i === 0) {
+            curve3d = currentCurve;
+        } else {
+            curve3d = curve3d.continue(currentCurve);
+        }
+
+    }
+    const curveMesh = BABYLON.MeshBuilder.CreatePolygon(name, {shape: curve3d.getPoints(), sideOrientation: BABYLON.Mesh.DOUBLESIDE}, scene, earcut);
+    const material = new BABYLON.StandardMaterial(name + 'material', scene);
+    const color3 = new BABYLON.Color3(color.r, color.g, color.b);
+    const toHsv = color3.toHSV();
+    const dampened = new BABYLON.Color3();
+    BABYLON.Color3.HSVtoRGBToRef(toHsv.r, toHsv.g * 0.4, toHsv.b * 1.05, dampened);
+    material.emissiveColor = dampened;
+    material.alpha = color.a
+    curveMesh.material = material;
+    curveMesh.translate(new BABYLON.Vector3(0, 1, 0), height);
+    result.push(curveMesh);
+
+    const linesMesh = BABYLON.Mesh.CreateLines(name + '-lines', curve3d.getPoints(), scene);
+    linesMesh.color = color3;
+    result.push(linesMesh);
+    return result;
+}
+
+function getComponents(color: number): [number, number, number] {
+    return [(color & 0xff0000) >> 16, (color & 0x00ff00) >> 8, (color & 0x0000ff)];
 }

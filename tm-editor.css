@@ -2,38 +2,8 @@ canvas {
     border: 1px solid darkslateblue;
 }
 
-.side .results {
-    display: inline-block;
-    vertical-align: middle;
-
-    margin-top: 150px;
-    margin-left: 20px;
-}
-
-.operations {
-    margin-left: 20px;
-}
-
-.side {
-    display: inline-flex;
-    flex-direction: column;
-    vertical-align: top;
-
-    width: 50%;
-}
-
-.side > * {
-    margin-top: 30px;
-}
-
-.results div {
-    margin-bottom: 20px;
-}
-
-#import_dialog {
-    display: none;
-}
-
-#import_dialog button {
-    margin-top: 20px;
+/* CSS is so cool, selector can't start with a number */
+#three-d-view {
+    width: 800px;
+    height: 600px;
 }
