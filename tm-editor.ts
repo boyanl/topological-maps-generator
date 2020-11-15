@@ -1443,7 +1443,7 @@ function updateScene(layers: { curves: Curve[], color: number}[]) {
         const layer = layers[i];
         for (let j = 0; j < layer.curves.length; ++j) {
             const curve = layer.curves[j];
-            const color = BABYLON.Color4.FromInts(...getComponents(layer.color), 255*(1 - (heightStep * i * 0.7)/maxHeight));
+            const color = BABYLON.Color3.FromInts(...getComponents(layer.color));
             createMeshForCurve(curve, maxHeight - heightStep * i, `curvemesh-layer-${i}-curve-${j}`, color, scene);
         }
     }
@@ -1456,7 +1456,7 @@ function updateScene(layers: { curves: Curve[], color: number}[]) {
     }
 }
 
-function createMeshForCurve(curve: Curve, height: number, name: string, color: BABYLON.Color4, scene: BABYLON.Scene): BABYLON.Mesh[] {
+function createMeshForCurve(curve: Curve, height: number, name: string, color: BABYLON.Color3, scene: BABYLON.Scene): BABYLON.Mesh[] {
     if (curve.points.length <= 2 || curve.points.length * 2 - 2 !== curve.controlPoints.length) {
         console.log('Curve seemingly violates assumptions; returning no meshes');
         return [];
@@ -1479,18 +1479,16 @@ function createMeshForCurve(curve: Curve, height: number, name: string, color: B
     }
     const curveMesh = BABYLON.MeshBuilder.CreatePolygon(name, {shape: curve3d.getPoints(), sideOrientation: BABYLON.Mesh.DOUBLESIDE}, scene, earcut);
     const material = new BABYLON.StandardMaterial(name + 'material', scene);
-    const color3 = new BABYLON.Color3(color.r, color.g, color.b);
-    const toHsv = color3.toHSV();
+    const toHsv = color.toHSV();
     const dampened = new BABYLON.Color3();
     BABYLON.Color3.HSVtoRGBToRef(toHsv.r, toHsv.g * 0.4, toHsv.b * 1.05, dampened);
     material.emissiveColor = dampened;
-    material.alpha = color.a
     curveMesh.material = material;
     curveMesh.translate(new BABYLON.Vector3(0, 1, 0), height);
     result.push(curveMesh);
 
     const linesMesh = BABYLON.Mesh.CreateLines(name + '-lines', curve3d.getPoints(), scene);
-    linesMesh.color = color3;
+    linesMesh.color = color;
     result.push(linesMesh);
     return result;
 }
