@@ -2,7 +2,7 @@
 # Topological maps generator
 
 ## Overview
-Editor for generating curves that look (somewhat) like a topological maps, with the option of viewing the final result in 3D
+Editor for generating curves that look (somewhat) like a topological map, with the option of viewing the final result in 3D
 
 # Build & run
 You need to have `node` and `npm` (>= 7.0) installed.
