@@ -26,3 +26,5 @@ Delete points by selecting one or more of them are press `Delete`
 When adding new points, the behaviour depends whether you have a selected point, or not. If there is a selected point, then adding a new point will add it to the polygon, which the current point is a part of.
 
 If there is no point selected, then the new point will be in a separate polygon
+
+There's also basic undo/redo support - use `Ctrl+Z` for undo, `Ctrl+Y` for redo
