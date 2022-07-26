@@ -16,7 +16,7 @@ and then
 
 Server should be up on port `8081`, just navigate to `http://localhost:8081` and you should see the editor
 
-You can also try it out here - https://boyanl.github.io/topological-maps-generator/
+You can also try it out here - <a href="https://boyanl.github.io/topological-maps-generator/" target="_blank">https://boyanl.github.io/topological-maps-generator/</a> 
 
 ## How to use the editor
 Add new points by left-clicking on an empty space in the left pane. Select existing points by left-clicking them. You can also multi-select (`Ctrl` + click) and area-select (hold left mouse button and drag selection). You can also drag selected points.
