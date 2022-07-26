@@ -1,0 +1,9 @@
+canvas {
+    border: 1px solid darkslateblue;
+}
+
+/* CSS is so cool, selector can't start with a number */
+#three-d-view {
+    width: 800px;
+    height: 600px;
+}
