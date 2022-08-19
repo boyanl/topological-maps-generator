@@ -52,6 +52,7 @@ let allPointsets: Pointset[] = [],
 let selected: Point[] = [];
 
 let mouseDownStart: number, mouseDownCoords: Point;
+let mouseInside: boolean;
 let dragging = false, dragged: Point = null, dragStart: Point = null; //dragStart is the coords of the point at the start of its drag
 let draggedCpInfo: {
     cpIndex: number,
@@ -121,9 +122,12 @@ function setupDrawing() {
 
 
     scrollbox.on("click", (e: PIXI.InteractionEvent) => onMouseReleased(e));
+    scrollbox.on("mouseupoutside", (e: PIXI.InteractionEvent) => onMouseReleased(e));
     scrollbox.on("mousedown", (e: PIXI.InteractionEvent) => onMouseDown(e));
     scrollbox.on("mousemove", (e: PIXI.InteractionEvent) => onMouseMove(e));
+
     scrollbox.on("mouseout", (e: PIXI.InteractionEvent) => onMouseOut(e));
+    scrollbox.on("mouseover", (e: PIXI.InteractionEvent) => onMouseOver(e))
 
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("keydown", onKeyDown);
@@ -161,7 +165,7 @@ function onMouseReleased(e: PIXI.InteractionEvent) {
     const mouseDownElapsed = performance.now() - mouseDownStart,
         isClick = mouseDownElapsed <= 150;
 
-    if (isClick && isAddingNew() && nearest == null) {
+    if (mouseInside && isClick && isAddingNew() && nearest == null) {
         const addAfter = last(selected);
         let {pointset: ps, index: i} = addAfter != null ? findPointsetAndIndex(addAfter) : {pointset: createPointset(), index: -1};
         const currentSelected = selected;
@@ -170,7 +174,7 @@ function onMouseReleased(e: PIXI.InteractionEvent) {
             unapply: () => { deleteAtIndex(ps, i + 1); selected = currentSelected;  }
         };
         doCommand(command);
-    } else if (dragging) {
+    } else if (mouseInside && dragging) {
         dragging = false;
         if (dragged != null) {
             let from = {x : dragStart.x, y: dragStart.y}, to = coords, point = dragged;
@@ -254,7 +258,7 @@ function onMouseMove(e: PIXI.InteractionEvent) {
     if (!dragging && dragStart != null && elapsed >= 75) {
         dragging = true;
     }
-    areaSelecting = dragStart == null && elapsed >= 150;
+    areaSelecting = dragStart == null && elapsed >= 150 && mouseInside;
 
     if (dragged != null && dragging) {
         drag(dragged, getCoords(e.data.global));
@@ -279,12 +283,11 @@ function onMouseMove(e: PIXI.InteractionEvent) {
 }
 
 function onMouseOut(_: PIXI.InteractionEvent) {
-    //clear flags related to area selection if the mouse leaves the drawing area
-    //else we can't react if the mouse pointer gets released
-    areaSelecting = false;
-    selectionArea = null;
-
     repaint();
+}
+
+function onMouseOver(_ : PIXI.InteractionEvent) {
+    mouseInside = true;
 }
 
 
@@ -1428,14 +1431,10 @@ function setupScene(scene: BABYLON.Scene) {
 }
 
 function updateScene(layers: { curves: Curve[], color: number}[]) {
-    for (let i = 0; i < scene.meshes.length; ++i) {
-        const mesh = scene.meshes[i];
-        const isCurveMesh = mesh.name.startsWith('curvemesh');
-        if (isCurveMesh) {
-            mesh.dispose(true, true);
-            scene.removeMesh(mesh, true);
-        }
-    }
+    scene.meshes.filter(mesh => mesh.name.startsWith('curvemesh')).forEach(mesh => {
+        scene.removeMesh(mesh, true);
+        mesh.dispose(true, true);
+    });
 
     const maxHeight = 200;
     const heightStep = maxHeight / layers.length;
@@ -1447,18 +1446,10 @@ function updateScene(layers: { curves: Curve[], color: number}[]) {
             createMeshForCurve(curve, maxHeight - heightStep * i, `curvemesh-layer-${i}-curve-${j}`, color, scene);
         }
     }
-
-    for (let element of scene.meshes) {
-        const isCurveMesh = element.name.startsWith('curvemesh');
-        if (isCurveMesh && (element as any).used === false) {
-            scene.removeMesh(element, true);
-        }
-    }
 }
 
 function createMeshForCurve(curve: Curve, height: number, name: string, color: BABYLON.Color3, scene: BABYLON.Scene): BABYLON.Mesh[] {
     if (curve.points.length <= 2 || curve.points.length * 2 - 2 !== curve.controlPoints.length) {
-        console.log('Curve seemingly violates assumptions; returning no meshes');
         return [];
     }
     const result = [];
